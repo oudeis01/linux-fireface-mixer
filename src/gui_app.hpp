@@ -4,7 +4,8 @@
 #include <string>
 #include <map>
 #include <memory>
-#include "imgui.h" // Needed for ImVec2
+#include <chrono>
+#include "imgui.h" // Needed for ImVec2, ImGuiID
 #include "alsa_core.hpp"
 
 namespace TotalMixer {
@@ -39,7 +40,7 @@ private:
     void DrawControlTab();
     void DrawMatrixTab(const char* title, bool is_playback);
     void DrawMasterSection();
-    void DrawFader(const char* label, long* value, int min_v, int max_v);
+    void DrawFader(const char* label, long* value, int min_v, int max_v, int ch_idx);
     bool SquareSlider(const char* label, long* value, int min_v, int max_v, const ImVec2& size);
 
     // Data / State
@@ -54,8 +55,11 @@ private:
     // Masters: index -> state
     std::vector<ChannelState> master_states;
 
-    // Polling
-    double last_poll_time = 0.0;
+    // Safety: Throttling
+    std::chrono::steady_clock::time_point last_poll_time;
+    std::map<ImGuiID, std::chrono::steady_clock::time_point> last_write_time;
+    
+    bool ShouldWrite(ImGuiID id);
 };
 
 } // namespace TotalMixer
