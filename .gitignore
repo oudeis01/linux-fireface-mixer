@@ -2,4 +2,3 @@ build/
 imgui.ini
 *.pyc
 *.sh
-aur/

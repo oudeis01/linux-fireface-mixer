@@ -1,108 +1,71 @@
-name: Build and Release
+name: Release and AUR Push
 
 on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version number (e.g., 0.1.0)'
-        required: true
-        default: '0.1.0'
 
 jobs:
-  build:
+  build-x86_64:
+    name: Build for x86_64
     runs-on: ubuntu-latest
-    container:
-      image: archlinux:latest
-    
+    permissions:
+      contents: write
     steps:
-      - name: Checkout code
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Build in Arch Linux Container
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            archlinux:latest \
+            bash -c "pacman -Syu --noconfirm && \
+                     pacman -S --noconfirm base-devel cmake \
+                       alsa-lib libx11 libxrandr libxinerama libxcursor libxi systemd && \
+                     mkdir -p build && \
+                     cd build && \
+                     cmake -DCMAKE_BUILD_TYPE=Release .. && \
+                     make -j\$(nproc) && \
+                     cd .. && \
+                     mv build/totalmixer_gui totalmixer_gui-x86_64 && \
+                     mv build/totalmixer_cli totalmixer_cli-x86_64"
+      
+      - name: Create/Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            totalmixer_gui-x86_64
+            totalmixer_cli-x86_64
+
+  aur-push:
+    name: Push Source and Binary Packages to AUR
+    needs: [build-x86_64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
-
-      - name: Install dependencies
-        run: |
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel cmake git \
-            alsa-lib libx11 libxrandr libxinerama libxcursor libxi \
-            systemd opengl-driver
-
-      - name: Build project
-        run: |
-          mkdir -p build
-          cd build
-          cmake -DCMAKE_BUILD_TYPE=Release ..
-          make -j$(nproc)
-
-      - name: Prepare release artifacts
-        run: |
-          mkdir -p release
-          cp build/totalmixer_gui release/
-          cp build/totalmixer_cli release/
-          cp README.md release/
-          cp README-kr.md release/
+          fetch-depth: 0
           
-          cd release
-          tar czf linux-fireface-mixer-x86_64.tar.gz totalmixer_gui totalmixer_cli README.md README-kr.md
+      - name: Publish AUR (Source)
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
+        with:
+          pkgname: linux-fireface-mixer
+          pkgbuild: ./PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ github.actor }}@users.noreply.github.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          updpkgsums: true
           
-          sha256sum linux-fireface-mixer-x86_64.tar.gz > linux-fireface-mixer-x86_64.tar.gz.sha256
-
-      - name: Get version
-        id: get_version
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-          else
-            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
+      - name: Publish AUR (Binary)
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
         with:
-          tag_name: v${{ steps.get_version.outputs.VERSION }}
-          name: Release v${{ steps.get_version.outputs.VERSION }}
-          body: |
-            ## Linux Fireface Mixer v${{ steps.get_version.outputs.VERSION }}
-            
-            GUI mixer application for RME Fireface 400 on Linux.
-            
-            ### Installation
-            
-            **Prerequisites:**
-            - [snd-firewire-ctl-services](https://github.com/alsa-project/snd-firewire-ctl-services) must be installed and running
-            
-            **Arch Linux (AUR):**
-            ```bash
-            # Binary package
-            yay -S linux-fireface-mixer-bin
-            
-            # Source package
-            yay -S linux-fireface-mixer
-            ```
-            
-            **Manual Installation:**
-            ```bash
-            tar xzf linux-fireface-mixer-x86_64.tar.gz
-            cd linux-fireface-mixer-x86_64
-            sudo cp totalmixer_gui /usr/local/bin/
-            ```
-            
-            ### Changes
-            See [commit history](https://github.com/${{ github.repository }}/commits/v${{ steps.get_version.outputs.VERSION }})
-          files: |
-            release/linux-fireface-mixer-x86_64.tar.gz
-            release/linux-fireface-mixer-x86_64.tar.gz.sha256
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-fireface-mixer-x86_64
-          path: release/
+          pkgname: linux-fireface-mixer-bin
+          pkgbuild: ./PKGBUILD-bin
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ github.actor }}@users.noreply.github.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          updpkgsums: true
