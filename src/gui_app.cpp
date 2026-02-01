@@ -15,13 +15,13 @@ namespace TotalMixer {
 
 bool TotalMixerGUI::ShouldWrite(ImGuiID id) {
     auto now = std::chrono::steady_clock::now();
-    if (last_write_time.find(id) == last_write_time.end()) {
-        last_write_time[id] = now;
+    if (last_widget_write_time.find(id) == last_widget_write_time.end()) {
+        last_widget_write_time[id] = now;
         return true;
     }
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_write_time[id]).count();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_widget_write_time[id]).count();
     if (elapsed > 50) { 
-        last_write_time[id] = now;
+        last_widget_write_time[id] = now;
         return true;
     }
     return false;
@@ -104,9 +104,12 @@ bool TotalMixerGUI::SquareSlider(const char* label, long* value, int min_v, int 
     return value_changed;
 }
 
-TotalMixerGUI::TotalMixerGUI() 
+TotalMixerGUI::TotalMixerGUI()
     : connection_status(ConnectionStatus::HardwareNotFound),
-      service_status(ServiceStatus::NotRunning) {
+      service_status(ServiceStatus::NotRunning),
+      last_write_time(std::chrono::steady_clock::now()),
+      active_widget_id(0),
+      has_active_matrix_cell(false) {
     out_labels = {
         "Line 1", "Line 2", "Line 3", "Line 4", "Line 5", "Line 6", 
         "Phones L", "Phones R", "SPDIF L", "SPDIF R", 
@@ -177,27 +180,41 @@ void TotalMixerGUI::PollMasterVolumes() {
 }
 
 void TotalMixerGUI::PollInputMatrix() {
-    if (!alsa) return;
     try {
-        for (int o = 0; o < 18; ++o) {
-            auto r_ana = alsa->get_matrix_row("mixer:analog-source-gain", o, 8);
-            auto r_spdif = alsa->get_matrix_row("mixer:spdif-source-gain", o, 2);
-            auto r_adat = alsa->get_matrix_row("mixer:adat-source-gain", o, 8);
-
-            if (r_ana) { for (size_t i = 0; i < r_ana->size(); ++i) input_matrix_cache[{static_cast<int>(i), o}] = (*r_ana)[i]; }
-            if (r_spdif) { for (size_t i = 0; i < r_spdif->size(); ++i) input_matrix_cache[{static_cast<int>(8 + i), o}] = (*r_spdif)[i]; }
-            if (r_adat) { for (size_t i = 0; i < r_adat->size(); ++i) input_matrix_cache[{static_cast<int>(10 + i), o}] = (*r_adat)[i]; }
+        std::vector<std::string> ctl_names = {"mixer:analog-source-gain", "mixer:spdif-source-gain", "mixer:adat-source-gain"};
+        std::vector<int> offsets = {0, 8, 10};
+        for (size_t grp = 0; grp < ctl_names.size(); ++grp) {
+            int base_in = offsets[grp];
+            int count = (grp == 0) ? 8 : ((grp == 1) ? 2 : 8);
+            for (int local_in = 0; local_in < count; ++local_in) {
+                auto r = alsa->get_matrix_row(ctl_names[grp], local_in, 18);
+                if (r) {
+                    int global_in = base_in + local_in;
+                    for (size_t o = 0; o < r->size(); ++o) {
+                        if (has_active_matrix_cell && 
+                            active_matrix_cell.first == static_cast<int>(o) && 
+                            active_matrix_cell.second == global_in) {
+                            continue;
+                        }
+                        input_matrix_cache[{static_cast<int>(o), global_in}] = (*r)[o];
+                    }
+                }
+            }
         }
     } catch (...) {}
 }
 
 void TotalMixerGUI::PollPlaybackMatrix() {
-    if (!alsa) return;
     try {
         for (int o = 0; o < 18; ++o) {
             auto r_pb = alsa->get_matrix_row("mixer:stream-source-gain", o, 18);
             if (r_pb) {
                 for (size_t i = 0; i < r_pb->size(); ++i) {
+                    if (has_active_matrix_cell && 
+                        active_matrix_cell.first == static_cast<int>(i) && 
+                        active_matrix_cell.second == o) {
+                        continue;
+                    }
                     playback_matrix_cache[{static_cast<int>(i), o}] = (*r_pb)[i];
                 }
             }
@@ -208,9 +225,21 @@ void TotalMixerGUI::PollPlaybackMatrix() {
 void TotalMixerGUI::Render() {
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_poll_time).count();
-    if (elapsed > 500) {
+    auto since_write = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_write_time).count();
+    
+    // Skip polling if:
+    // 1. Any widget is currently active (being dragged)
+    // 2. Less than 200ms since last write to hardware
+    bool any_widget_active = (ImGui::GetActiveID() != 0);
+    bool should_skip_poll = any_widget_active || (since_write < 200);
+    
+    if (elapsed > 500 && !should_skip_poll) {
+        std::cout << "[POLL] Executing PollHardware()" << std::endl;
         PollHardware();
         last_poll_time = now;
+    } else if (elapsed > 500 && should_skip_poll) {
+        std::cout << "[POLL] Skipping poll - active:" << any_widget_active 
+                  << " since_write:" << since_write << "ms" << std::endl;
     }
 
     ImGuiIO& io = ImGui::GetIO();
@@ -504,16 +533,28 @@ void TotalMixerGUI::DrawMatrixTab(const char* title, bool is_playback) {
                 std::string id = "##Mat" + std::to_string(r) + "_" + std::to_string(c);
                 auto& cache = is_playback ? playback_matrix_cache : input_matrix_cache;
                 long& val = cache[{c, r}]; 
+                long val_before = val;
                 
                 bool changed = SquareSlider(id.c_str(), &val, 0, 65536, ImVec2(40, 40));
                 
-                // SAFETY: Write only on release
+                if (ImGui::IsItemActive()) {
+                    active_matrix_cell = {c, r};
+                    has_active_matrix_cell = true;
+                }
+                
+                if (changed && val != val_before) {
+                    std::cout << "[SLIDER] Mat[" << r << "," << c << "] changed: " 
+                              << val_before << " -> " << val << std::endl;
+                }
+                
                 if (alsa && ImGui::IsItemDeactivatedAfterEdit()) {
+                    has_active_matrix_cell = false;
                     std::string mixer_name = is_playback ? "mixer:stream-source-gain" : 
                                             (r < 8 ? "mixer:analog-source-gain" : 
                                             (r < 10 ? "mixer:spdif-source-gain" : "mixer:adat-source-gain"));
                     int hw_in_idx = is_playback ? r : (r < 8 ? r : (r < 10 ? r-8 : r-10));
                     alsa->set_matrix_gain(mixer_name, c, hw_in_idx, val);
+                    last_write_time = std::chrono::steady_clock::now();
                     std::cout << "Write Matrix [" << c+1 << "<-" << r+1 << "]: " << val << std::endl;
                 }
             }
@@ -576,6 +617,7 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
     
     if (alsa && ImGui::IsItemDeactivatedAfterEdit()) {
         alsa->set_matrix_gain("output-volume", 0, ch_idx, *value);
+        last_write_time = std::chrono::steady_clock::now();
         std::cout << "Write Master [" << ch_idx+1 << "]: " << *value << std::endl;
         
         if (ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
@@ -608,6 +650,7 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
                 *value = new_val;
                 if (alsa) {
                     alsa->set_matrix_gain("output-volume", 0, ch_idx, *value);
+                    last_write_time = std::chrono::steady_clock::now();
                     std::cout << "Write Master [" << ch_idx+1 << "] from input: " << *value << std::endl;
                     
                     if (ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {

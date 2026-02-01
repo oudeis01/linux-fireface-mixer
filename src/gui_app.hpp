@@ -77,7 +77,13 @@ private:
 
     // Safety: Throttling
     std::chrono::steady_clock::time_point last_poll_time;
-    std::map<ImGuiID, std::chrono::steady_clock::time_point> last_write_time;
+    std::chrono::steady_clock::time_point last_write_time;
+    std::map<ImGuiID, std::chrono::steady_clock::time_point> last_widget_write_time;
+    
+    // Active widget tracking (to prevent poll overwriting active slider)
+    ImGuiID active_widget_id;
+    std::pair<int, int> active_matrix_cell;
+    bool has_active_matrix_cell;
     
     bool ShouldWrite(ImGuiID id);
 };
