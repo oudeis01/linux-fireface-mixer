@@ -479,9 +479,17 @@ void TotalMixerGUI::DrawControlTab() {
 void TotalMixerGUI::DrawMatrixTab(const char* title, bool is_playback) {
     ImGui::BeginChild(title, ImVec2(0, 0), true);
     
-    if (ImGui::BeginTable("MatrixTable", 19, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollX)) {
+    ImGuiTableFlags flags = ImGuiTableFlags_SizingFixedFit | 
+                            ImGuiTableFlags_Borders | 
+                            ImGuiTableFlags_ScrollX | 
+                            ImGuiTableFlags_ScrollY;
+    
+    if (ImGui::BeginTable("MatrixTable", 19, flags)) {
         ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 60.0f);
         for (int i = 0; i < 18; ++i) ImGui::TableSetupColumn(out_labels[i].c_str(), ImGuiTableColumnFlags_WidthFixed, 45.0f);
+        
+        ImGui::TableSetupScrollFreeze(1, 1);
+        
         ImGui::TableHeadersRow();
 
         for (int r = 0; r < 18; ++r) {
