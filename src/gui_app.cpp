@@ -556,20 +556,116 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
     
     std::string id = "##" + std::string(label);
     float v_float = (float)*value;
+    bool fader_changed = false;
     if (ImGui::VSliderFloat(id.c_str(), ImVec2(fader_w, 140), &v_float, (float)min_v, (float)max_v, "")) {
         *value = (long)v_float;
+        fader_changed = true;
+        
+        if (ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
+            int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
+            if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
+                master_states[pair_idx].value = *value;
+            }
+        }
     }
     
-    // SAFETY: Write only on release
+    std::string popup_id = "FaderInput_" + std::string(label);
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+        ImGui::OpenPopup(popup_id.c_str());
+    }
+    
     if (alsa && ImGui::IsItemDeactivatedAfterEdit()) {
         alsa->set_matrix_gain("output-volume", 0, ch_idx, *value);
         std::cout << "Write Master [" << ch_idx+1 << "]: " << *value << std::endl;
+        
+        if (ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
+            int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
+            if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
+                alsa->set_matrix_gain("output-volume", 0, pair_idx, master_states[pair_idx].value);
+                std::cout << "Write Master [" << pair_idx+1 << "] (linked): " << master_states[pair_idx].value << std::endl;
+            }
+        }
+    }
+    
+    if (ImGui::BeginPopup(popup_id.c_str())) {
+        ImGui::Text("Enter dB value:");
+        ImGui::Separator();
+        
+        static std::string input_buffer;
+        std::string input_id = "##input_" + std::string(label);
+        
+        if (ImGui::IsWindowAppearing()) {
+            input_buffer = val_to_db_str(*value);
+            if (!input_buffer.empty() && input_buffer[0] == '+') {
+                input_buffer = input_buffer.substr(1);
+            }
+        }
+        
+        ImGui::SetKeyboardFocusHere();
+        if (ImGui::InputText(input_id.c_str(), &input_buffer, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            int new_val = db_str_to_val(input_buffer);
+            if (new_val >= min_v && new_val <= max_v) {
+                *value = new_val;
+                if (alsa) {
+                    alsa->set_matrix_gain("output-volume", 0, ch_idx, *value);
+                    std::cout << "Write Master [" << ch_idx+1 << "] from input: " << *value << std::endl;
+                    
+                    if (ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
+                        int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
+                        if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
+                            master_states[pair_idx].value = *value;
+                            alsa->set_matrix_gain("output-volume", 0, pair_idx, *value);
+                            std::cout << "Write Master [" << pair_idx+1 << "] from input (linked): " << *value << std::endl;
+                        }
+                    }
+                }
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        
+        ImGui::TextDisabled("Range: -inf to +6.00 dB");
+        
+        ImGui::EndPopup();
     }
     
     std::string db_str = val_to_db_str(*value);
     float db_width = ImGui::CalcTextSize(db_str.c_str()).x;
     ImGui::SetCursorScreenPos(ImVec2(current_x + (group_w - db_width)/2.0f, ImGui::GetCursorScreenPos().y));
     ImGui::TextColored(ImVec4(0,1,0,1), "%s", db_str.c_str());
+    
+    if (ch_idx < (int)master_states.size()) {
+        bool is_linked = master_states[ch_idx].is_linked;
+        int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
+        
+        ImVec4 link_color = is_linked ? ImVec4(0.2f, 0.8f, 1.0f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 0.6f);
+        ImGui::PushStyleColor(ImGuiCol_Button, link_color);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(link_color.x * 1.2f, link_color.y * 1.2f, link_color.z * 1.2f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(link_color.x * 1.4f, link_color.y * 1.4f, link_color.z * 1.4f, 1.0f));
+        
+        float button_width = 50.0f;
+        ImGui::SetCursorScreenPos(ImVec2(current_x + (group_w - button_width)/2.0f, ImGui::GetCursorScreenPos().y));
+        
+        std::string link_label = is_linked ? "==" : "||";
+        std::string link_btn_id = link_label + "##link_" + std::to_string(ch_idx);
+        
+        if (ImGui::Button(link_btn_id.c_str(), ImVec2(button_width, 20))) {
+            master_states[ch_idx].is_linked = !is_linked;
+            
+            if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
+                master_states[pair_idx].is_linked = master_states[ch_idx].is_linked;
+            }
+        }
+        
+        ImGui::PopStyleColor(3);
+        
+        if (ImGui::IsItemHovered()) {
+            std::string tooltip = "Link with ";
+            if (pair_idx >= 0 && pair_idx < (int)out_labels.size()) {
+                tooltip += out_labels[pair_idx];
+            }
+            ImGui::SetTooltip("%s", tooltip.c_str());
+        }
+    }
     
     ImGui::EndGroup();
 }
