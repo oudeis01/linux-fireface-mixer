@@ -23,7 +23,8 @@ jobs:
             archlinux:latest \
             bash -c "pacman -Syu --noconfirm && \
                      pacman -S --noconfirm base-devel cmake \
-                       alsa-lib libx11 libxrandr libxinerama libxcursor libxi systemd && \
+                       alsa-lib libx11 libxrandr libxinerama libxcursor libxi \
+                       systemd mesa libglvnd && \
                      mkdir -p build && \
                      cd build && \
                      cmake -DCMAKE_BUILD_TYPE=Release .. && \
