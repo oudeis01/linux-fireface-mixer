@@ -23,7 +23,21 @@ This project requires `snd-fireface-ctl-service` to manage ALSA controls for the
 
 ## Installation
 
-### 1. Install System Dependencies
+### Arch Linux (AUR)
+
+#### Binary Package (Recommended)
+```bash
+yay -S linux-fireface-mixer-bin
+```
+
+#### Source Package
+```bash
+yay -S linux-fireface-mixer
+```
+
+### Manual Build
+
+#### 1. Install System Dependencies
 
 #### Arch Linux
 ```bash
@@ -35,7 +49,7 @@ sudo pacman -S alsa-lib libx11 libxrandr libxinerama libxcursor libxi systemd
 sudo apt install libasound2-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libsystemd-dev
 ```
 
-### 2. Install snd-firewire-ctl-services
+#### 2. Install snd-firewire-ctl-services
 
 Follow the installation instructions at:
 https://github.com/alsa-project/snd-firewire-ctl-services
@@ -52,7 +66,7 @@ Verify the service is running:
 systemctl --user status snd-fireface-ctl.service
 ```
 
-### 3. Build TotalMixer
+#### 3. Build TotalMixer
 
 ```bash
 mkdir build

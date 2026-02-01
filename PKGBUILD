@@ -5,7 +5,7 @@ pkgrel=1
 pkgdesc="GUI mixer application for RME Fireface 400 on Linux"
 arch=('x86_64')
 url="https://github.com/oudeis01/linux-fireface-mixer"
-license=('custom')
+license=('GPL3')
 depends=('alsa-lib' 'libx11' 'libxrandr' 'libxinerama' 'libxcursor' 'libxi' 'systemd-libs')
 makedepends=('cmake')
 optdepends=('snd-firewire-ctl-services: Required for hardware control')
@@ -28,6 +28,8 @@ package() {
   install -Dm755 totalmixer_gui "$pkgdir/usr/bin/totalmixer_gui"
   install -Dm755 totalmixer_cli "$pkgdir/usr/bin/totalmixer_cli"
   
+  install -Dm644 "$srcdir/$pkgname-$pkgver/LICENSE" \
+      "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 "$srcdir/$pkgname-$pkgver/README.md" \
       "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 "$srcdir/$pkgname-$pkgver/README-kr.md" \

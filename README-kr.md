@@ -23,7 +23,21 @@ RME Fireface 오디오 인터페이스를 위한 Linux용 GUI 믹서 애플리�
 
 ## 설치
 
-### 1. 시스템 종속성 설치
+### Arch Linux (AUR)
+
+#### 바이너리 패키지 (권장)
+```bash
+yay -S linux-fireface-mixer-bin
+```
+
+#### 소스 패키지
+```bash
+yay -S linux-fireface-mixer
+```
+
+### 수동 빌드
+
+#### 1. 시스템 종속성 설치
 
 #### Arch Linux
 ```bash
@@ -35,7 +49,7 @@ sudo pacman -S alsa-lib libx11 libxrandr libxinerama libxcursor libxi systemd
 sudo apt install libasound2-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libsystemd-dev
 ```
 
-### 2. snd-firewire-ctl-services 설치
+#### 2. snd-firewire-ctl-services 설치
 
 다음 링크의 설치 가이드를 따르십시오:
 https://github.com/alsa-project/snd-firewire-ctl-services
@@ -52,7 +66,7 @@ systemctl --user start snd-fireface-ctl.service
 systemctl --user status snd-fireface-ctl.service
 ```
 
-### 3. TotalMixer 빌드
+#### 3. TotalMixer 빌드
 
 ```bash
 mkdir build
