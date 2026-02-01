@@ -267,16 +267,23 @@ void TotalMixerGUI::DrawHeader() {
         
         switch (connection_status) {
             case ConnectionStatus::ServiceNotRunning:
-                info_str = "ERROR: snd-fireface-ctl.service is NOT RUNNING\n";
-                info_str += ServiceChecker::get_help_message(service_status);
+                info_str = "ERROR: snd-fireface-ctl.service is NOT RUNNING\n\n";
+                info_str += "This application requires snd-fireface-ctl-service to be running.\n";
+                info_str += "Installation guide:\n";
+                info_str += "https://github.com/oudeis01/linux-fireface-mixer#installation";
                 break;
             case ConnectionStatus::ServiceFailed:
-                info_str = "ERROR: snd-fireface-ctl.service FAILED\n";
-                info_str += ServiceChecker::get_help_message(service_status);
+                info_str = "ERROR: snd-fireface-ctl.service FAILED\n\n";
+                info_str += ServiceChecker::get_help_message(service_status) + "\n\n";
+                info_str += "Installation guide:\n";
+                info_str += "https://github.com/oudeis01/linux-fireface-mixer#installation";
                 break;
             case ConnectionStatus::HardwareNotFound:
-                info_str = "ERROR: Hardware Not Found\n";
-                info_str += "Fireface device not detected. Check connections and ensure snd-fireface-ctl.service is running.";
+                info_str = "ERROR: Hardware Not Found\n\n";
+                info_str += "Fireface device not detected.\n";
+                info_str += "Check hardware connections and ensure snd-fireface-ctl.service is running.\n\n";
+                info_str += "Setup guide:\n";
+                info_str += "https://github.com/oudeis01/linux-fireface-mixer#installation";
                 break;
             default:
                 info_str = "ERROR: Hardware Disconnected";
