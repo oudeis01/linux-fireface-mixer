@@ -24,7 +24,7 @@ jobs:
             bash -c "pacman -Syu --noconfirm && \
                      pacman -S --noconfirm base-devel cmake git \
                        alsa-lib libx11 libxrandr libxinerama libxcursor libxi \
-                       systemd mesa libglvnd && \
+                       systemd mesa libglvnd wayland-protocols libxkbcommon && \
                      mkdir -p build && \
                      cd build && \
                      cmake -DCMAKE_BUILD_TYPE=Release .. && \
