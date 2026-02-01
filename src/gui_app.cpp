@@ -1,5 +1,6 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
+#include "misc/cpp/imgui_stdlib.h"
 #include "imgui_internal.h"
 #include "gui_app.hpp"
 #include "ui_helpers.hpp"
@@ -7,6 +8,8 @@
 #include <string>
 #include <cmath>
 #include <cstdio>
+#include <vector>
+#include <algorithm>
 
 namespace TotalMixer {
 
@@ -16,7 +19,6 @@ bool TotalMixerGUI::ShouldWrite(ImGuiID id) {
         last_write_time[id] = now;
         return true;
     }
-    
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_write_time[id]).count();
     if (elapsed > 50) { 
         last_write_time[id] = now;
@@ -25,6 +27,7 @@ bool TotalMixerGUI::ShouldWrite(ImGuiID id) {
     return false;
 }
 
+// Helper: Square Slider Implementation
 bool TotalMixerGUI::SquareSlider(const char* label, long* value, int min_v, int max_v, const ImVec2& size) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems) return false;
@@ -93,20 +96,17 @@ bool TotalMixerGUI::SquareSlider(const char* label, long* value, int min_v, int 
     
     window->DrawList->AddRect(frame_bb.Min, frame_bb.Max, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.3f, 1.0f)));
     
-    float db = ((float)(*value) - 59294.0f) / 1040.25f;
-    char db_buf[32];
-    if (*value <= 0) snprintf(db_buf, 32, "-inf");
-    else if (db < -65.0f) snprintf(db_buf, 32, "-inf");
-    else snprintf(db_buf, 32, "%+.2f", db);
-
-    ImVec2 text_size = ImGui::CalcTextSize(db_buf);
+    std::string db_str = val_to_db_str(*value);
+    ImVec2 text_size = ImGui::CalcTextSize(db_str.c_str());
     ImVec2 text_pos = ImVec2(frame_bb.Min.x + (size.x - text_size.x) * 0.5f, frame_bb.Min.y + (size.y - text_size.y) * 0.5f);
-    window->DrawList->AddText(text_pos, ImGui::GetColorU32(ImVec4(0.9f, 0.9f, 0.9f, 1.0f)), db_buf);
+    window->DrawList->AddText(text_pos, ImGui::GetColorU32(ImVec4(0.9f, 0.9f, 0.9f, 1.0f)), db_str.c_str());
 
     return value_changed;
 }
 
-TotalMixerGUI::TotalMixerGUI() {
+TotalMixerGUI::TotalMixerGUI() 
+    : connection_status(ConnectionStatus::HardwareNotFound),
+      service_status(ServiceStatus::NotRunning) {
     out_labels = {
         "Line 1", "Line 2", "Line 3", "Line 4", "Line 5", "Line 6", 
         "Phones L", "Phones R", "SPDIF L", "SPDIF R", 
@@ -120,16 +120,40 @@ TotalMixerGUI::TotalMixerGUI() {
 
     master_states.resize(18);
 
+    // Check service status first
+    CheckServiceStatus();
+
+    // Service must be running to use the GUI
+    if (service_status != ServiceStatus::Running) {
+        std::cerr << "GUI Error: snd-fireface-ctl.service is not running" << std::endl;
+        if (service_status == ServiceStatus::Failed) {
+            connection_status = ConnectionStatus::ServiceFailed;
+        } else {
+            connection_status = ConnectionStatus::ServiceNotRunning;
+        }
+        return;
+    }
+
+    // Try to connect to ALSA
     try {
         alsa = std::make_unique<AlsaCore>();
+        connection_status = ConnectionStatus::Connected;
         std::cout << "GUI: Connected to " << alsa->get_card_name() << std::endl;
         PollHardware(); 
     } catch (const std::exception& e) {
         std::cerr << "GUI Warning: Failed to connect to ALSA: " << e.what() << std::endl;
+        connection_status = ConnectionStatus::HardwareNotFound;
     }
 }
 
 TotalMixerGUI::~TotalMixerGUI() {}
+
+void TotalMixerGUI::CheckServiceStatus() {
+    service_status = ServiceChecker::check_systemd("snd-fireface-ctl.service");
+    if (service_status == ServiceStatus::NotInstalled) {
+        std::cerr << "GUI Warning: snd-fireface-ctl.service not found" << std::endl;
+    }
+}
 
 void TotalMixerGUI::PollHardware() {
     if (!alsa) return;
@@ -198,6 +222,12 @@ void TotalMixerGUI::Render() {
 
     DrawHeader();
     
+    bool ui_enabled = (connection_status == ConnectionStatus::Connected);
+    
+    if (!ui_enabled) {
+        ImGui::BeginDisabled();
+    }
+    
     float master_h = 240.0f * scale;
     float tab_h = ImGui::GetContentRegionAvail().y - master_h;
     if (tab_h < 100.0f) tab_h = 100.0f;
@@ -220,24 +250,223 @@ void TotalMixerGUI::Render() {
     }
     ImGui::EndChild();
     
-    DrawMasterSection(); 
+    DrawMasterSection();
+    
+    if (!ui_enabled) {
+        ImGui::EndDisabled();
+    }
 
     ImGui::End();
 }
 
 void TotalMixerGUI::DrawHeader() {
-    if (!alsa) {
-        ImGui::TextColored(ImVec4(1, 0, 0, 1), "Hardware Disconnected");
+    std::string info_str;
+    
+    if (connection_status != ConnectionStatus::Connected) {
+        ImVec4 error_color = ImVec4(1, 0, 0, 1);
+        
+        switch (connection_status) {
+            case ConnectionStatus::ServiceNotRunning:
+                info_str = "ERROR: snd-fireface-ctl.service is NOT RUNNING\n";
+                info_str += ServiceChecker::get_help_message(service_status);
+                break;
+            case ConnectionStatus::ServiceFailed:
+                info_str = "ERROR: snd-fireface-ctl.service FAILED\n";
+                info_str += ServiceChecker::get_help_message(service_status);
+                break;
+            case ConnectionStatus::HardwareNotFound:
+                info_str = "ERROR: Hardware Not Found\n";
+                info_str += "Fireface device not detected. Check connections and ensure snd-fireface-ctl.service is running.";
+                break;
+            default:
+                info_str = "ERROR: Hardware Disconnected";
+                break;
+        }
+        
+        int line_count = 1;
+        for (char c : info_str) {
+            if (c == '\n') line_count++;
+        }
+        line_count++;
+        
+        ImGui::PushStyleColor(ImGuiCol_Text, error_color);
+        ImGui::InputTextMultiline("##error_info", &info_str, ImVec2(-FLT_MIN, ImGui::GetTextLineHeight()*line_count), ImGuiInputTextFlags_ReadOnly);
+        ImGui::PopStyleColor();
+        
+        ImGui::Spacing();
+        
+        if (connection_status == ConnectionStatus::ServiceNotRunning) {
+            if (ImGui::Button("Start Service")) {
+                if (ServiceChecker::try_start("snd-fireface-ctl.service")) {
+                    std::cout << "Service start requested, waiting for initialization..." << std::endl;
+                } else {
+                    std::cerr << "Failed to start service via systemd" << std::endl;
+                }
+            }
+            ImGui::SameLine();
+        } else if (connection_status == ConnectionStatus::ServiceFailed) {
+            if (ImGui::Button("Restart Service")) {
+                if (ServiceChecker::try_start("snd-fireface-ctl.service")) {
+                    std::cout << "Service restart requested" << std::endl;
+                }
+            }
+            ImGui::SameLine();
+        }
+        
+        if (ImGui::Button("Retry Connection")) {
+            CheckServiceStatus();
+            try {
+                alsa = std::make_unique<AlsaCore>();
+                connection_status = ConnectionStatus::Connected;
+                std::cout << "GUI: Reconnected to " << alsa->get_card_name() << std::endl;
+                PollHardware();
+            } catch (const std::exception& e) {
+                std::cerr << "Reconnection failed: " << e.what() << std::endl;
+            }
+        }
+        
+        ImGui::Separator();
         return;
     }
-    ImGui::TextColored(ImVec4(0,1,0,1), "%s", alsa->get_card_name().c_str());
-    ImGui::SameLine(300);
-    ImGui::Text("Rate: --"); 
+
+    std::string hw_info = alsa->get_card_name();
+    
+    size_t guid_pos = hw_info.find("GUID");
+    if (guid_pos != std::string::npos) {
+        device_info.name = hw_info.substr(0, guid_pos - 2);
+        size_t at_pos = hw_info.find("at", guid_pos);
+        if (at_pos != std::string::npos) {
+            device_info.guid = hw_info.substr(guid_pos + 5, at_pos - guid_pos - 6);
+            size_t comma_pos = hw_info.find(",", at_pos);
+            if (comma_pos != std::string::npos) {
+                device_info.id = hw_info.substr(at_pos + 3, comma_pos - at_pos - 3);
+                device_info.bus_speed = hw_info.substr(comma_pos + 2);
+            } else {
+                device_info.id = hw_info.substr(at_pos + 3);
+            }
+        }
+    } else {
+        device_info.name = hw_info;
+        device_info.guid = "Unknown";
+        device_info.id = "Unknown";
+        device_info.bus_speed = "Unknown";
+    }
+    
+    info_str = "Device: " + device_info.name + "\n";
+    info_str += "GUID: " + device_info.guid + "\n";
+    info_str += "ID: " + device_info.id + "\n";
+    info_str += "Bus Speed: " + device_info.bus_speed + (
+        device_info.bus_speed.find("S400") != std::string::npos ? " (400 Mbps)" : 
+        device_info.bus_speed.find("FW800") != std::string::npos ? " (800 Mbps)" : 
+        device_info.bus_speed.find("S1600") != std::string::npos ? " (1600 Mbps)" : 
+        device_info.bus_speed.find("S3200") != std::string::npos ? " (3200 Mbps)" : 
+        " (Unknown Speed)");
+    
+    info_str += "\n";
+    
+    std::string service_status_str;
+    ImVec4 service_color;
+    switch (service_status) {
+        case ServiceStatus::Running:
+            service_status_str = "Service: snd-fireface-ctl.service [RUNNING]";
+            service_color = ImVec4(0, 1, 0, 1);
+            break;
+        case ServiceStatus::NotRunning:
+            service_status_str = "Service: snd-fireface-ctl.service [NOT RUNNING]";
+            service_color = ImVec4(1, 0, 0, 1);
+            break;
+        case ServiceStatus::Failed:
+            service_status_str = "Service: snd-fireface-ctl.service [FAILED]";
+            service_color = ImVec4(1, 0, 0, 1);
+            break;
+        case ServiceStatus::NotInstalled:
+            service_status_str = "Service: snd-fireface-ctl.service [NOT INSTALLED]";
+            service_color = ImVec4(1, 0, 0, 1);
+            break;
+    }
+    
+    int line_count_before = 1;
+    for (char c : info_str) {
+        if (c == '\n') line_count_before++;
+    }
+    line_count_before++;
+
+    ImGui::InputTextMultiline("##device_info", &info_str, ImVec2(-FLT_MIN, ImGui::GetTextLineHeight()*line_count_before), ImGuiInputTextFlags_ReadOnly);
+    
+    ImGui::PushStyleColor(ImGuiCol_Text, service_color);
+    ImGui::Text("%s", service_status_str.c_str());
+    ImGui::PopStyleColor();
+
     ImGui::Separator();
 }
 
 void TotalMixerGUI::DrawControlTab() {
-    ImGui::Text("Control Tab (TODO: Port Enum/Bool controls to C++)");
+    // Groups
+    struct GroupDef { const char* name; std::vector<const char*> controls; };
+    static const std::vector<GroupDef> groups = {
+        {"Clock Settings", {"primary-clock-source", "word-clock-single-speed", "active-clock-source"}},
+        {"Input Options", {"line-input-level", "line-3/4-inst", "line-3/4-pad", "mic-1/2-powering"}},
+        {"Output Levels", {"line-output-level", "headphone-output-level", "optical-output-signal"}},
+        {"S/PDIF Config", {"spdif-input-interface", "spdif-output-format", "spdif-output-non-audio"}}
+    };
+
+    ImGui::BeginChild("ControlTab", ImVec2(0,0), true);
+    ImGui::Columns(2, "ControlCols", false);
+    
+    for (const auto& grp : groups) {
+        ImGui::BeginGroup();
+        ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "[ %s ]", grp.name);
+        ImGui::Separator();
+        
+        for (const char* c_name : grp.controls) {
+            if (!alsa) continue;
+            auto info = alsa->get_control_info(c_name, 0);
+            if (!info) continue;
+            auto val = alsa->get_control_value(c_name, 0);
+            if (!val) continue;
+
+            int count = info->count;
+            std::vector<long> values = val->int_values;
+            if (values.size() < (size_t)count) values.resize(count, values.empty() ? 0 : values[0]);
+
+            for (int i = 0; i < count; ++i) {
+                ImGui::PushID(c_name); ImGui::PushID(i);
+                std::string label = std::string(c_name);
+                if (count > 1) label += " (" + std::to_string(i+1) + ")";
+                
+                ImGui::Text("%s:", label.c_str()); ImGui::SameLine(200); 
+                
+                if (info->type == "Enum") {
+                    int current_idx = (int)values[i];
+                    if (current_idx >= 0 && current_idx < (int)info->enum_items.size()) {
+                        // ImGui Combo
+                        // Need const char* array for combo
+                        std::vector<const char*> items;
+                        for (const auto& s : info->enum_items) items.push_back(s.c_str());
+                        
+                        int temp_idx = current_idx;
+                        if (ImGui::Combo("##combo", &temp_idx, items.data(), items.size())) {
+                            values[i] = temp_idx;
+                            alsa->set_control_value(c_name, 0, values);
+                        }
+                    }
+                } else if (info->type == "Bool") {
+                    bool b_val = (values[i] != 0);
+                    if (ImGui::Checkbox("##chk", &b_val)) {
+                        values[i] = b_val ? 1 : 0;
+                        alsa->set_control_value(c_name, 0, values);
+                    }
+                    ImGui::SameLine(); ImGui::Text(b_val ? "ON" : "OFF");
+                }
+                ImGui::PopID(); ImGui::PopID();
+            }
+        }
+        ImGui::EndGroup();
+        ImGui::Spacing(); ImGui::Spacing();
+        ImGui::NextColumn();
+    }
+    ImGui::Columns(1);
+    ImGui::EndChild();
 }
 
 void TotalMixerGUI::DrawMatrixTab(const char* title, bool is_playback) {
@@ -263,6 +492,7 @@ void TotalMixerGUI::DrawMatrixTab(const char* title, bool is_playback) {
                 
                 bool changed = SquareSlider(id.c_str(), &val, 0, 65536, ImVec2(40, 40));
                 
+                // SAFETY: Write only on release
                 if (alsa && ImGui::IsItemDeactivatedAfterEdit()) {
                     std::string mixer_name = is_playback ? "mixer:stream-source-gain" : 
                                             (r < 8 ? "mixer:analog-source-gain" : 
@@ -315,20 +545,16 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
         *value = (long)v_float;
     }
     
+    // SAFETY: Write only on release
     if (alsa && ImGui::IsItemDeactivatedAfterEdit()) {
         alsa->set_matrix_gain("output-volume", 0, ch_idx, *value);
         std::cout << "Write Master [" << ch_idx+1 << "]: " << *value << std::endl;
     }
     
-    float db = ((float)(*value) - 59294.0f) / 1040.25f;
-    char db_buf[32];
-    if (*value <= 0) snprintf(db_buf, 32, "-inf");
-    else if (db < -65.0f) snprintf(db_buf, 32, "-inf");
-    else snprintf(db_buf, 32, "%+.2f", db);
-
-    float db_width = ImGui::CalcTextSize(db_buf).x;
+    std::string db_str = val_to_db_str(*value);
+    float db_width = ImGui::CalcTextSize(db_str.c_str()).x;
     ImGui::SetCursorScreenPos(ImVec2(current_x + (group_w - db_width)/2.0f, ImGui::GetCursorScreenPos().y));
-    ImGui::TextColored(ImVec4(0,1,0,1), "%s", db_buf);
+    ImGui::TextColored(ImVec4(0,1,0,1), "%s", db_str.c_str());
     
     ImGui::EndGroup();
 }

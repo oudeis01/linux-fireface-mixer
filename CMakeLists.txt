@@ -52,6 +52,7 @@ add_library(imgui STATIC
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
     ${IMGUI_DIR}/imgui_demo.cpp
+    ${IMGUI_DIR}/misc/cpp/imgui_stdlib.cpp
     ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
     ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
 )
@@ -68,6 +69,11 @@ if (NOT ALSA_FOUND)
     message(FATAL_ERROR "\n\nError: libasound (ALSA library) not found.\n\nTo install on Arch Linux:\n  sudo pacman -S alsa-lib\n\n")
 endif()
 
+# --- libsystemd Check ---
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(SYSTEMD REQUIRED libsystemd)
+include_directories(${SYSTEMD_INCLUDE_DIRS})
+
 
 # --- Targets ---
 
@@ -83,7 +89,8 @@ target_link_libraries(totalmixer_cli ${ALSA_LIBRARIES})
 add_executable(totalmixer_gui
     src/gui_main.cpp
     src/gui_app.cpp
+    src/service_checker.cpp
     src/alsa_core.cpp
 )
 target_include_directories(totalmixer_gui PRIVATE src)
-target_link_libraries(totalmixer_gui PRIVATE imgui ${ALSA_LIBRARIES} glfw)
+target_link_libraries(totalmixer_gui PRIVATE imgui ${ALSA_LIBRARIES} ${SYSTEMD_LIBRARIES} glfw)

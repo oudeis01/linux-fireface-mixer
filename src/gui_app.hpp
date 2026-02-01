@@ -7,12 +7,27 @@
 #include <chrono>
 #include "imgui.h" // Needed for ImVec2, ImGuiID
 #include "alsa_core.hpp"
+#include "service_checker.hpp"
 
 namespace TotalMixer {
+
+enum class ConnectionStatus {
+    Connected,
+    ServiceNotRunning,
+    ServiceFailed,
+    HardwareNotFound
+};
 
 struct ChannelState {
     long value = 0;
     bool is_linked = false;
+};
+
+struct Device_Info {
+    std::string name;
+    std::string guid;
+    std::string id;
+    std::string bus_speed;
 };
 
 class TotalMixerGUI {
@@ -30,7 +45,11 @@ public:
 private:
     // Core Logic
     std::unique_ptr<AlsaCore> alsa;
+    ConnectionStatus connection_status;
+    ServiceStatus service_status;
+    
     void PollHardware();
+    void CheckServiceStatus();
     void PollMasterVolumes();
     void PollPlaybackMatrix();
     void PollInputMatrix();
@@ -46,6 +65,7 @@ private:
     // Data / State
     std::vector<std::string> out_labels;
     std::vector<std::string> in_labels;
+    Device_Info device_info;
 
     // Cache State
     // Matrix: map (out_idx, in_idx) -> value
