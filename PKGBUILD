@@ -1,4 +1,4 @@
-# Maintainer: Haram Choi <altitudimen at google dot com>
+# Maintainer: Haram Choi <altitudinem at google dot com>
 pkgname=linux-fireface-mixer
 pkgver=0.1.0
 pkgrel=1

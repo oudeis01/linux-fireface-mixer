@@ -71,4 +71,4 @@ make
 
 ## 라이선스
 
-라이선스 세부 정보는 LICENSE 파일을 참조하십시오.
+이 프로젝트는 GNU General Public License v3.0에 따라 라이선스가 부여됩니다 - 자세한 내용은 [LICENSE](LICENSE) 파일을 참조하십시오.
