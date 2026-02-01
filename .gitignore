@@ -1,29 +1,5 @@
 build/
-.cache/
-*.ini
-*.log
-*.tmp
-.DS_Store
-.vscode/
-.idea/
-node_modules/
-dist/
-.env
-*.bak
-*.swp
-*.out
-*.class
-*.jar
-*.war
-*.iml
+imgui.ini
 *.pyc
-__pycache__/
-*.egg-info/
-coverage/
-todo*
-
-# Python scripts (legacy)
-*.py
-
-# Shell scripts (local utilities)
 *.sh
+aur/
