@@ -21,3 +21,9 @@ __pycache__/
 *.egg-info/
 coverage/
 todo*
+
+# Python scripts (legacy)
+*.py
+
+# Shell scripts (local utilities)
+*.sh
