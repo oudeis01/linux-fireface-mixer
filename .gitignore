@@ -2,3 +2,7 @@ build/
 imgui.ini
 *.pyc
 *.sh
+.cache/
+*.log
+*.md
+notes/
