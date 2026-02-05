@@ -2,13 +2,13 @@
 pkgname=linux-fireface-mixer-bin
 _pkgname=linux-fireface-mixer
 pkgver=0.1.0
-pkgrel=1
+pkgrel=2
 pkgdesc="GUI mixer application for RME Fireface 400 on Linux (Pre-compiled binary)"
 arch=('x86_64')
 url="https://github.com/oudeis01/linux-fireface-mixer"
 license=('GPL3')
-depends=('alsa-lib' 'libx11' 'libxrandr' 'libxinerama' 'libxcursor' 'libxi' 'systemd-libs')
-optdepends=('snd-firewire-ctl-services: Required for hardware control')
+depends=('alsa-lib' 'libx11' 'libxrandr' 'libxinerama' 'libxcursor' 'libxi' 'systemd-libs' 'snd-firewire-ctl-services')
+optdepends=()
 provides=("$_pkgname")
 conflicts=("$_pkgname")
 
