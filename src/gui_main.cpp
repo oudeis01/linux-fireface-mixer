@@ -25,13 +25,26 @@ static void glfw_error_callback(int error, const char* description) {
     fprintf(stderr, "GLFW Error %d: %s\n", error, description);
 }
 
+void print_help(const char* prog_name) {
+    std::cout << "Usage: " << prog_name << " [OPTIONS]\n\n";
+    std::cout << "Options:\n";
+    std::cout << "  --connect-grpc <HOST:PORT>  Connect to remote gRPC server (default port 50051)\n";
+    std::cout << "  --connect-osc <HOST:PORT>   Connect to remote OSC server (default port 9000)\n";
+    std::cout << "  --connect <HOST:PORT>       Alias for --connect-grpc\n";
+    std::cout << "  --help, -h                  Show this help message\n";
+    std::cout << "\nIf no options provided, connects to local ALSA hardware.\n";
+}
+
 int main(int argc, char** argv) {
     std::string grpc_addr;
     std::string osc_addr;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--connect-grpc" && i + 1 < argc) {
+        if (arg == "--help" || arg == "-h") {
+            print_help(argv[0]);
+            return 0;
+        } else if (arg == "--connect-grpc" && i + 1 < argc) {
             grpc_addr = argv[++i];
         } else if (arg == "--connect-osc" && i + 1 < argc) {
             osc_addr = argv[++i];
