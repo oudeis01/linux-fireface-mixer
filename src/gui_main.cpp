@@ -9,13 +9,25 @@
 #include <GLFW/glfw3.h> // Will drag system OpenGL headers
 
 #include "gui_app.hpp"
+#include "AlsaBackend.hpp"
+#include "backends/GrpcClientBackend.hpp"
 #include <iostream>
+#include <memory>
+#include <string>
 
 static void glfw_error_callback(int error, const char* description) {
     fprintf(stderr, "GLFW Error %d: %s\n", error, description);
 }
 
-int main(int, char**) {
+int main(int argc, char** argv) {
+    std::string connect_addr;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--connect" && i + 1 < argc) {
+            connect_addr = argv[++i];
+        }
+    }
+
     // 1. Setup GLFW
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
@@ -27,7 +39,11 @@ int main(int, char**) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
 
     // Create window
-    GLFWwindow* window = glfwCreateWindow(1400, 950, "Linux TotalMix v2 (C++)", nullptr, nullptr);
+    std::string win_title = "Linux TotalMix v2";
+    if (!connect_addr.empty()) win_title += " (Remote: " + connect_addr + ")";
+    else win_title += " (Local)";
+
+    GLFWwindow* window = glfwCreateWindow(1400, 950, win_title.c_str(), nullptr, nullptr);
     if (window == nullptr)
         return 1;
     glfwMakeContextCurrent(window);
@@ -45,7 +61,17 @@ int main(int, char**) {
     ImGui_ImplOpenGL3_Init(glsl_version);
 
     // 3. Initialize GUI App Logic
-    TotalMixer::TotalMixerGUI app;
+    std::shared_ptr<TotalMixer::IMixerBackend> backend;
+    
+    if (!connect_addr.empty()) {
+        std::cout << "Mode: Remote Client (" << connect_addr << ")" << std::endl;
+        backend = std::make_shared<TotalMixer::GrpcClientBackend>(connect_addr);
+    } else {
+        std::cout << "Mode: Local ALSA" << std::endl;
+        backend = std::make_shared<TotalMixer::AlsaBackend>();
+    }
+
+    TotalMixer::TotalMixerGUI app(backend);
 
     // 4. Main Loop
     while (!glfwWindowShouldClose(window)) {

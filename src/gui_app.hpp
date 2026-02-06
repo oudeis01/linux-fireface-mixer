@@ -6,7 +6,7 @@
 #include <memory>
 #include <chrono>
 #include "imgui.h" // Needed for ImVec2, ImGuiID
-#include "alsa_core.hpp"
+#include "IMixerBackend.hpp"
 #include "service_checker.hpp"
 
 namespace TotalMixer {
@@ -32,7 +32,7 @@ struct Device_Info {
 
 class TotalMixerGUI {
 public:
-    TotalMixerGUI();
+    explicit TotalMixerGUI(std::shared_ptr<IMixerBackend> backend);
     ~TotalMixerGUI();
 
     // Disable copy
@@ -44,7 +44,7 @@ public:
 
 private:
     // Core Logic
-    std::unique_ptr<AlsaCore> alsa;
+    std::shared_ptr<IMixerBackend> backend;
     ConnectionStatus connection_status;
     ServiceStatus service_status;
     

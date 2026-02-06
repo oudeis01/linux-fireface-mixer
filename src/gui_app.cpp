@@ -104,8 +104,9 @@ bool TotalMixerGUI::SquareSlider(const char* label, long* value, int min_v, int 
     return value_changed;
 }
 
-TotalMixerGUI::TotalMixerGUI()
-    : connection_status(ConnectionStatus::HardwareNotFound),
+TotalMixerGUI::TotalMixerGUI(std::shared_ptr<IMixerBackend> backend)
+    : backend(backend),
+      connection_status(ConnectionStatus::HardwareNotFound),
       service_status(ServiceStatus::NotRunning),
       last_write_time(std::chrono::steady_clock::now()),
       active_widget_id(0),
@@ -137,14 +138,13 @@ TotalMixerGUI::TotalMixerGUI()
         return;
     }
 
-    // Try to connect to ALSA
-    try {
-        alsa = std::make_unique<AlsaCore>();
+    // Try to connect backend
+    if (backend->initialize()) {
         connection_status = ConnectionStatus::Connected;
-        std::cout << "GUI: Connected to " << alsa->get_card_name() << std::endl;
+        std::cout << "GUI: Connected via backend" << std::endl;
         PollHardware(); 
-    } catch (const std::exception& e) {
-        std::cerr << "GUI Warning: Failed to connect to ALSA: " << e.what() << std::endl;
+    } else {
+        std::cerr << "GUI Warning: Backend initialization failed" << std::endl;
         connection_status = ConnectionStatus::HardwareNotFound;
     }
 }
@@ -159,7 +159,7 @@ void TotalMixerGUI::CheckServiceStatus() {
 }
 
 void TotalMixerGUI::PollHardware() {
-    if (!alsa) return;
+    if (!backend) return;
     try {
         PollMasterVolumes();
         PollPlaybackMatrix();
@@ -168,34 +168,50 @@ void TotalMixerGUI::PollHardware() {
 }
 
 void TotalMixerGUI::PollMasterVolumes() {
-    if (!alsa) return;
+    if (!backend || !backend->isConnected()) return;
     try {
-        auto mv = alsa->get_matrix_row("output-volume", 0, 18);
-        if (mv) {
-            for (size_t i = 0; i < mv->size() && i < 18; ++i) {
-                master_states[i].value = (*mv)[i];
-            }
+        for (int i = 0; i < 18; ++i) {
+            float db = backend->getOutputVolume(i);
+            master_states[i].value = db_to_val(db);
         }
     } catch (...) {}
 }
 
 void TotalMixerGUI::PollInputMatrix() {
+    if (!backend || !backend->isConnected()) return;
     try {
-        std::vector<std::string> ctl_names = {"mixer:analog-source-gain", "mixer:spdif-source-gain", "mixer:adat-source-gain"};
-        std::vector<int> offsets = {0, 8, 10};
-        for (size_t grp = 0; grp < ctl_names.size(); ++grp) {
-            int base_in = offsets[grp];
-            int count = (grp == 0) ? 8 : ((grp == 1) ? 2 : 8);
-            for (int local_in = 0; local_in < count; ++local_in) {
-                auto r = alsa->get_matrix_row(ctl_names[grp], local_in, 18);
-                if (r) {
-                    int global_in = base_in + local_in;
-                    for (size_t o = 0; o < r->size(); ++o) {
-                        if (has_active_matrix_cell && 
-                            active_matrix_cell.first == static_cast<int>(o) && 
-                            active_matrix_cell.second == global_in) {
-                            continue;
-                        }
+        for (int in = 0; in < 18; ++in) {
+            for (int out = 0; out < 18; ++out) {
+                if (has_active_matrix_cell && 
+                    active_matrix_cell.first == out && 
+                    active_matrix_cell.second == in) {
+                    continue;
+                }
+                float db = backend->getMatrixGain(out, in);
+                input_matrix_cache[{out, in}] = db_to_val(db);
+            }
+        }
+    } catch (...) {}
+}
+
+void TotalMixerGUI::PollPlaybackMatrix() {
+    if (!backend || !backend->isConnected()) return;
+    try {
+        for (int pb = 0; pb < 18; ++pb) {
+            int src_idx = 18 + pb;
+            for (int out = 0; out < 18; ++out) {
+                if (has_active_matrix_cell && 
+                    active_matrix_cell.first == out && 
+                    active_matrix_cell.second == src_idx) {
+                    continue;
+                }
+                float db = backend->getMatrixGain(out, src_idx);
+                playback_matrix_cache[{out, pb}] = db_to_val(db);
+            }
+        }
+    } catch (...) {}
+}
+
                         input_matrix_cache[{static_cast<int>(o), global_in}] = (*r)[o];
                     }
                 }
@@ -365,7 +381,7 @@ void TotalMixerGUI::DrawHeader() {
         return;
     }
 
-    std::string hw_info = alsa->get_card_name();
+    std::string hw_info = backend->getDeviceName();
     
     size_t guid_pos = hw_info.find("GUID");
     if (guid_pos != std::string::npos) {
@@ -437,6 +453,9 @@ void TotalMixerGUI::DrawHeader() {
 }
 
 void TotalMixerGUI::DrawControlTab() {
+    ImGui::Text("Device Settings are temporarily disabled during refactoring.");
+    // TODO: Implement generic control API in IMixerBackend
+    /*
     // Groups
     struct GroupDef { const char* name; std::vector<const char*> controls; };
     static const std::vector<GroupDef> groups = {
@@ -503,6 +522,7 @@ void TotalMixerGUI::DrawControlTab() {
     }
     ImGui::Columns(1);
     ImGui::EndChild();
+    */
 }
 
 void TotalMixerGUI::DrawMatrixTab(const char* title, bool is_playback) {
@@ -615,15 +635,17 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
         ImGui::OpenPopup(popup_id.c_str());
     }
     
-    if (alsa && ImGui::IsItemDeactivatedAfterEdit()) {
-        alsa->set_matrix_gain("output-volume", 0, ch_idx, *value);
+    if (backend && ImGui::IsItemDeactivatedAfterEdit()) {
+        float db = val_to_db(*value);
+        backend->setOutputVolume(ch_idx, db);
         last_write_time = std::chrono::steady_clock::now();
-        std::cout << "Write Master [" << ch_idx+1 << "]: " << *value << std::endl;
+        std::cout << "Write Master [" << ch_idx+1 << "]: " << *value << " (" << db << " dB)" << std::endl;
         
         if (ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
             int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
             if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
-                alsa->set_matrix_gain("output-volume", 0, pair_idx, master_states[pair_idx].value);
+                float pair_db = val_to_db(master_states[pair_idx].value);
+                backend->setOutputVolume(pair_idx, pair_db);
                 std::cout << "Write Master [" << pair_idx+1 << "] (linked): " << master_states[pair_idx].value << std::endl;
             }
         }
@@ -648,8 +670,9 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
             int new_val = db_str_to_val(input_buffer);
             if (new_val >= min_v && new_val <= max_v) {
                 *value = new_val;
-                if (alsa) {
-                    alsa->set_matrix_gain("output-volume", 0, ch_idx, *value);
+                if (backend) {
+                    float db = val_to_db(*value);
+                    backend->setOutputVolume(ch_idx, db);
                     last_write_time = std::chrono::steady_clock::now();
                     std::cout << "Write Master [" << ch_idx+1 << "] from input: " << *value << std::endl;
                     
@@ -657,7 +680,8 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
                         int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
                         if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
                             master_states[pair_idx].value = *value;
-                            alsa->set_matrix_gain("output-volume", 0, pair_idx, *value);
+                            float pair_db = val_to_db(*value);
+                            backend->setOutputVolume(pair_idx, pair_db);
                             std::cout << "Write Master [" << pair_idx+1 << "] from input (linked): " << *value << std::endl;
                         }
                     }

@@ -75,6 +75,48 @@ pkg_check_modules(SYSTEMD REQUIRED libsystemd)
 include_directories(${SYSTEMD_INCLUDE_DIRS})
 
 
+# --- gRPC & Protobuf ---
+find_package(Protobuf REQUIRED)
+find_package(gRPC CONFIG REQUIRED)
+
+set(_PROTOBUF_LIBPROTOBUF protobuf::libprotobuf)
+set(_REFLECTION_grpc_grpcpp_reflection grpc::grpc++_reflection)
+set(_GRPC_GRPCPP grpc::grpc++)
+
+if(NOT _GRPC_CPP_PLUGIN_EXECUTABLE)
+    find_program(_GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin)
+endif()
+
+get_filename_component(hw_proto "src/protos/fireface.proto" ABSOLUTE)
+get_filename_component(hw_proto_path "${hw_proto}" PATH)
+
+set(hw_proto_srcs "${CMAKE_CURRENT_BINARY_DIR}/fireface.pb.cc")
+set(hw_proto_hdrs "${CMAKE_CURRENT_BINARY_DIR}/fireface.pb.h")
+set(hw_grpc_srcs "${CMAKE_CURRENT_BINARY_DIR}/fireface.grpc.pb.cc")
+set(hw_grpc_hdrs "${CMAKE_CURRENT_BINARY_DIR}/fireface.grpc.pb.h")
+
+add_custom_command(
+      OUTPUT "${hw_proto_srcs}" "${hw_proto_hdrs}" "${hw_grpc_srcs}" "${hw_grpc_hdrs}"
+      COMMAND ${Protobuf_PROTOC_EXECUTABLE}
+      ARGS --grpc_out "${CMAKE_CURRENT_BINARY_DIR}"
+           --cpp_out "${CMAKE_CURRENT_BINARY_DIR}"
+           -I "${hw_proto_path}"
+           --plugin=protoc-gen-grpc="${_GRPC_CPP_PLUGIN_EXECUTABLE}"
+           "${hw_proto}"
+      DEPENDS "${hw_proto}")
+
+add_library(hw_grpc_proto
+  ${hw_proto_srcs}
+  ${hw_grpc_srcs}
+  ${hw_proto_hdrs}
+  ${hw_grpc_hdrs})
+target_link_libraries(hw_grpc_proto
+  ${_REFLECTION_grpc_grpcpp_reflection}
+  ${_GRPC_GRPCPP}
+  ${_PROTOBUF_LIBPROTOBUF})
+target_include_directories(hw_grpc_proto PUBLIC "${CMAKE_CURRENT_BINARY_DIR}")
+
+
 # --- Targets ---
 
 # 1. CLI App
@@ -91,6 +133,18 @@ add_executable(totalmixer_gui
     src/gui_app.cpp
     src/service_checker.cpp
     src/alsa_core.cpp
+    src/AlsaBackend.cpp
+    src/backends/GrpcClientBackend.cpp
 )
 target_include_directories(totalmixer_gui PRIVATE src)
-target_link_libraries(totalmixer_gui PRIVATE imgui ${ALSA_LIBRARIES} ${SYSTEMD_LIBRARIES} glfw)
+target_link_libraries(totalmixer_gui PRIVATE imgui ${ALSA_LIBRARIES} ${SYSTEMD_LIBRARIES} glfw hw_grpc_proto)
+
+# 3. Server App (Headless)
+add_executable(totalmixer_server
+    src/server_main.cpp
+    src/alsa_core.cpp
+    src/AlsaBackend.cpp
+    src/server/MixerGrpcService.cpp
+)
+target_include_directories(totalmixer_server PRIVATE src)
+target_link_libraries(totalmixer_server ${ALSA_LIBRARIES} hw_grpc_proto)

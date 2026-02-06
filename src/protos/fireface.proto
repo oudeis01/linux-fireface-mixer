@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package fireface;
+
+service MixerService {
+  // --- Commands ---
+  // Set matrix routing gain
+  rpc SetMatrixGain (MatrixGainRequest) returns (Empty);
+  
+  // Set output fader volume
+  rpc SetOutputVolume (OutputVolumeRequest) returns (Empty);
+
+  // --- State Sync ---
+  // Get full mixer state (for initial sync)
+  rpc GetFullState (Empty) returns (MixerStateResponse);
+
+  // --- Realtime Data ---
+  // Stream metering data (server -> client)
+  rpc StreamMeters (Empty) returns (stream MeterData);
+}
+
+message Empty {}
+
+message MatrixGainRequest {
+  int32 output_ch = 1;
+  int32 source_ch = 2; // 0-17: Input, 18-35: Playback
+  float gain_db = 3;
+}
+
+message OutputVolumeRequest {
+  int32 output_ch = 1;
+  float gain_db = 2;
+}
+
+message MixerStateResponse {
+  repeated float matrix_gains_db = 1; // Size: 18 * 36
+  repeated float output_gains_db = 2; // Size: 18
+  // Add Phantom/Pad/Inst later
+}
+
+message MeterData {
+  repeated float input_levels = 1;    // Size: 18
+  repeated float playback_levels = 2; // Size: 18
+  repeated float output_levels = 3;   // Size: 18
+}

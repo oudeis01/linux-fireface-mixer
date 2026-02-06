@@ -90,6 +90,37 @@ static const float HARDWARE_DB_TABLE[64] = {
     -100.0f // knob 63 (mute/-inf)
 };
 
+// ALSA raw value → dB float
+static float val_to_db(int val) {
+    if (val <= 0) return -100.0f; // Mute
+    if (val > 65536) val = 65536;
+    int amp = (63 * (65536 - val)) / 65536;
+    if (amp < 0) amp = 0;
+    if (amp > 63) amp = 63;
+    return HARDWARE_DB_TABLE[amp];
+}
+
+// dB float → ALSA raw value
+static int db_to_val(float target_db) {
+    if (target_db > 6.0f) target_db = 6.0f;
+    if (target_db < -58.0f) return 0; // Mute
+    
+    int best_amp = 63;
+    float min_diff = 1000.0f;
+    for (int amp = 0; amp < 63; amp++) {
+        float db = HARDWARE_DB_TABLE[amp];
+        float diff = std::abs(db - target_db);
+        if (diff < min_diff) {
+            min_diff = diff;
+            best_amp = amp;
+        }
+    }
+    int val = (65536 * (63 - best_amp)) / 63;
+    if (val < 0) val = 0;
+    if (val > 65536) val = 65536;
+    return val;
+}
+
 // Value to dB string (ALSA raw value → dB display)
 static std::string val_to_db_str(int val) {
     // Handle mute/zero case
@@ -123,39 +154,11 @@ static std::string val_to_db_str(int val) {
 // dB string to Value (dB display → ALSA raw value)
 static int db_str_to_val(const std::string& db_str) {
     try {
-        // Handle -inf case
         std::string s = db_str;
         s.erase(std::remove(s.begin(), s.end(), '+'), s.end()); 
         if (s == "-inf") return 0;
-        
         float target_db = std::stof(s);
-        
-        // Clamp to valid range
-        if (target_db > 6.0f) target_db = 6.0f;
-        if (target_db < -58.0f) return 0; // Below -58 is mute
-        
-        // Find the closest knob position in the hardware table
-        int best_amp = 63; // Default to mute
-        float min_diff = 1000.0f;
-        
-        for (int amp = 0; amp < 63; amp++) { // Don't include 63 (mute) in search
-            float db = HARDWARE_DB_TABLE[amp];
-            float diff = std::abs(db - target_db);
-            if (diff < min_diff) {
-                min_diff = diff;
-                best_amp = amp;
-            }
-        }
-        
-        // Reverse conversion: hardware knob → ALSA raw value
-        // Rust formula: vol = (65536 * (63 - amp)) / 63
-        int val = (65536 * (63 - best_amp)) / 63;
-        
-        // Clamp to valid range
-        if (val < 0) val = 0;
-        if (val > 65536) val = 65536;
-        
-        return val;
+        return db_to_val(target_db);
     } catch (...) {
         return 0;
     }
