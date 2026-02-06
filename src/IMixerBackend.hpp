@@ -35,6 +35,9 @@ public:
     virtual bool isConnected() const = 0;
     virtual std::string getDeviceName() const = 0;
     virtual std::string getStatusMessage() const = 0;
+    
+    // Returns true if this backend controls local hardware (requires system service)
+    virtual bool isLocal() const = 0;
 
     // --- Matrix Mixing ---
     // Sets the gain for a specific routing point.

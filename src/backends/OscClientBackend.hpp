@@ -16,6 +16,7 @@ public:
     bool isConnected() const override;
     std::string getDeviceName() const override;
     std::string getStatusMessage() const override;
+    bool isLocal() const override { return false; }
 
     bool setMatrixGain(int output_ch, int source_ch, float gain_db) override;
     bool setOutputVolume(int output_ch, float gain_db) override;
