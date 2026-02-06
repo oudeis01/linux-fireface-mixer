@@ -1,43 +1,72 @@
-#include "server/MixerGrpcService.hpp"
 #include "AlsaBackend.hpp"
+#ifdef ENABLE_GRPC
+#include "server/MixerGrpcService.hpp"
 #include <grpcpp/grpcpp.h>
+#endif
+#ifdef ENABLE_OSC
+#include "server/MixerOscService.hpp"
+#endif
 #include <iostream>
 #include <memory>
 #include <string>
+#include <thread>
+#include <chrono>
 
 int main(int argc, char** argv) {
-    std::string server_address("0.0.0.0:50051");
-    if (argc > 1) {
-        server_address = argv[1];
+    std::string grpc_port = "0.0.0.0:50051";
+    std::string osc_port = "9000";
+    
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--port-grpc" && i + 1 < argc) grpc_port = argv[++i];
+        if (arg == "--port-osc" && i + 1 < argc) osc_port = argv[++i];
     }
 
     std::cout << "TotalMixer Headless Server" << std::endl;
     std::cout << "Initializing ALSA Backend..." << std::endl;
     
-    auto alsa_backend = std::make_shared<TotalMixer::AlsaBackend>();
+    auto backend = std::make_shared<TotalMixer::AlsaBackend>();
     
-    if (!alsa_backend->initialize()) {
-        std::cerr << "Failed to initialize ALSA backend: " << alsa_backend->getStatusMessage() << std::endl;
-        // We might want to keep running even if ALSA fails initially (e.g. device off), 
-        // but for now let's fail fast.
+    if (!backend->initialize()) {
+        std::cerr << "Failed to initialize ALSA backend: " << backend->getStatusMessage() << std::endl;
         return 1;
     }
 
-    TotalMixer::MixerGrpcService service(alsa_backend);
-
+    #ifdef ENABLE_GRPC
+    TotalMixer::MixerGrpcService grpc_service(backend);
     grpc::ServerBuilder builder;
-    // No SSL/TLS for local network audio control for now
-    builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
-    builder.RegisterService(&service);
+    builder.AddListeningPort(grpc_port, grpc::InsecureServerCredentials());
+    builder.RegisterService(&grpc_service);
     
-    std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
-    if (!server) {
-        std::cerr << "Failed to start gRPC server on " << server_address << std::endl;
-        return 1;
+    std::unique_ptr<grpc::Server> grpc_server(builder.BuildAndStart());
+    if (grpc_server) {
+        std::cout << "gRPC Server listening on " << grpc_port << std::endl;
+    } else {
+        std::cerr << "Failed to start gRPC server" << std::endl;
     }
-    
-    std::cout << "Server listening on " << server_address << std::endl;
-    server->Wait();
+    #endif
+
+    #ifdef ENABLE_OSC
+    TotalMixer::MixerOscService osc_service(backend, osc_port);
+    if (osc_service.start()) {
+        std::cout << "OSC Server listening on UDP " << osc_port << std::endl;
+    } else {
+        std::cerr << "Failed to start OSC server" << std::endl;
+    }
+    #endif
+
+    std::cout << "Server running. Press Ctrl+C to stop." << std::endl;
+
+    // Main Wait Loop
+    #ifdef ENABLE_GRPC
+    if (grpc_server) {
+        grpc_server->Wait();
+    } else {
+        while(true) std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    #else
+    while(true) std::this_thread::sleep_for(std::chrono::seconds(1));
+    #endif
 
     return 0;
 }

@@ -1,16 +1,11 @@
-// Dear ImGui: standalone example application for GLFW + OpenGL 3, using programmable pipeline
-// (GLFW is a cross-platform general purpose library for handling windows, inputs, OpenGL/Vulkan/Metal graphics context creation, etc.)
-
-#include "imgui.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_opengl3.h"
-#include <stdio.h>
-#define GL_SILENCE_DEPRECATION
-#include <GLFW/glfw3.h> // Will drag system OpenGL headers
-
 #include "gui_app.hpp"
 #include "AlsaBackend.hpp"
+#ifdef ENABLE_GRPC
 #include "backends/GrpcClientBackend.hpp"
+#endif
+#ifdef ENABLE_OSC
+#include "backends/OscClientBackend.hpp"
+#endif
 #include <iostream>
 #include <memory>
 #include <string>
@@ -20,11 +15,17 @@ static void glfw_error_callback(int error, const char* description) {
 }
 
 int main(int argc, char** argv) {
-    std::string connect_addr;
+    std::string grpc_addr;
+    std::string osc_addr;
+
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--connect" && i + 1 < argc) {
-            connect_addr = argv[++i];
+        if (arg == "--connect-grpc" && i + 1 < argc) {
+            grpc_addr = argv[++i];
+        } else if (arg == "--connect-osc" && i + 1 < argc) {
+            osc_addr = argv[++i];
+        } else if (arg == "--connect" && i + 1 < argc) { // Default alias
+            grpc_addr = argv[++i];
         }
     }
 
@@ -38,10 +39,11 @@ int main(int argc, char** argv) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
 
-    // Create window
+    // Create window title
     std::string win_title = "Linux TotalMix v2";
-    if (!connect_addr.empty()) win_title += " (Remote: " + connect_addr + ")";
-    else win_title += " (Local)";
+    if (!grpc_addr.empty()) win_title += " (gRPC: " + grpc_addr + ")";
+    else if (!osc_addr.empty()) win_title += " (OSC: " + osc_addr + ")";
+    else win_title += " (Local ALSA)";
 
     GLFWwindow* window = glfwCreateWindow(1400, 950, win_title.c_str(), nullptr, nullptr);
     if (window == nullptr)
@@ -63,9 +65,29 @@ int main(int argc, char** argv) {
     // 3. Initialize GUI App Logic
     std::shared_ptr<TotalMixer::IMixerBackend> backend;
     
-    if (!connect_addr.empty()) {
-        std::cout << "Mode: Remote Client (" << connect_addr << ")" << std::endl;
-        backend = std::make_shared<TotalMixer::GrpcClientBackend>(connect_addr);
+    if (!grpc_addr.empty()) {
+        #ifdef ENABLE_GRPC
+        std::cout << "Mode: Remote Client (gRPC " << grpc_addr << ")" << std::endl;
+        backend = std::make_shared<TotalMixer::GrpcClientBackend>(grpc_addr);
+        #else
+        std::cerr << "Error: gRPC support was disabled at build time." << std::endl;
+        return 1;
+        #endif
+    } else if (!osc_addr.empty()) {
+        #ifdef ENABLE_OSC
+        std::cout << "Mode: Remote Client (OSC " << osc_addr << ")" << std::endl;
+        std::string host = osc_addr;
+        std::string port = "9000";
+        size_t colon = osc_addr.find(':');
+        if (colon != std::string::npos) {
+            host = osc_addr.substr(0, colon);
+            port = osc_addr.substr(colon + 1);
+        }
+        backend = std::make_shared<TotalMixer::OscClientBackend>(host, port);
+        #else
+        std::cerr << "Error: OSC support was disabled at build time." << std::endl;
+        return 1;
+        #endif
     } else {
         std::cout << "Mode: Local ALSA" << std::endl;
         backend = std::make_shared<TotalMixer::AlsaBackend>();
