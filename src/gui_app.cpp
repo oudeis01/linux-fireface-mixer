@@ -1,5 +1,8 @@
+#define IMGUI_DEFINE_MATH_OPERATORS
 #include "gui_app.hpp"
 #include "imgui.h"
+#include "imgui_internal.h"
+#include "misc/cpp/imgui_stdlib.h"
 #include "ui_helpers.hpp"
 #include <iostream>
 #include <algorithm>
@@ -35,7 +38,7 @@ bool TotalMixerGUI::SquareSlider(const char* label, long* value, int min_v, int 
         return false; 
     }
 
-    bool pressed = hovered && ImGui::IsMouseClicked(0, id);
+    bool pressed = hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left, id);
     if (pressed) {
         ImGui::SetActiveID(id, window);
         ImGui::SetFocusID(id, window);
@@ -43,7 +46,7 @@ bool TotalMixerGUI::SquareSlider(const char* label, long* value, int min_v, int 
     
     bool value_changed = false;
     if (g.ActiveId == id) {
-        if (g.IO.MouseDown[0]) {
+        if (g.IO.MouseDown[ImGuiMouseButton_Left]) {
             float mouse_delta_y = g.IO.MouseDelta.y;
             if (mouse_delta_y != 0.0f) {
                 // Determine speed based on dB range logic
@@ -145,7 +148,7 @@ TotalMixerGUI::TotalMixerGUI(std::shared_ptr<IMixerBackend> backend)
 TotalMixerGUI::~TotalMixerGUI() {}
 
 void TotalMixerGUI::CheckServiceStatus() {
-    service_status = ServiceChecker::check_status("snd-fireface-ctl.service");
+    service_status = ServiceChecker::check_systemd("snd-fireface-ctl.service");
 }
 
 void TotalMixerGUI::PollHardware() {
