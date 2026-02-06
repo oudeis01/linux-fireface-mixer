@@ -365,7 +365,8 @@ void TotalMixerGUI::DrawMatrixTab(const char* title, bool is_playback) {
                 bool changed = SquareSlider(id.c_str(), &val, 0, 65536, ImVec2(40, 40));
                 
                 if (ImGui::IsItemActive()) {
-                    active_matrix_cell = {c, r};
+                    int src_ch = is_playback ? (18 + r) : r;
+                    active_matrix_cell = {c, src_ch};
                     has_active_matrix_cell = true;
                 }
                 
