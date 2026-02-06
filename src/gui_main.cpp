@@ -1,11 +1,22 @@
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+#include <stdio.h>
+
+#define GL_SILENCE_DEPRECATION
+#include <GLFW/glfw3.h> // Will drag system OpenGL headers
+
 #include "gui_app.hpp"
 #include "AlsaBackend.hpp"
+
 #ifdef ENABLE_GRPC
 #include "backends/GrpcClientBackend.hpp"
 #endif
+
 #ifdef ENABLE_OSC
 #include "backends/OscClientBackend.hpp"
 #endif
+
 #include <iostream>
 #include <memory>
 #include <string>

@@ -1,33 +1,21 @@
-#define IMGUI_DEFINE_MATH_OPERATORS
-#include "imgui.h"
-#include "misc/cpp/imgui_stdlib.h"
-#include "imgui_internal.h"
 #include "gui_app.hpp"
+#include "imgui.h"
 #include "ui_helpers.hpp"
 #include <iostream>
-#include <string>
-#include <cmath>
-#include <cstdio>
-#include <vector>
 #include <algorithm>
+#include <cmath>
 
 namespace TotalMixer {
 
 bool TotalMixerGUI::ShouldWrite(ImGuiID id) {
     auto now = std::chrono::steady_clock::now();
-    if (last_widget_write_time.find(id) == last_widget_write_time.end()) {
-        last_widget_write_time[id] = now;
-        return true;
+    if (last_widget_write_time.find(id) != last_widget_write_time.end()) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_widget_write_time[id]).count();
+        if (elapsed < 200) return false;
     }
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_widget_write_time[id]).count();
-    if (elapsed > 50) { 
-        last_widget_write_time[id] = now;
-        return true;
-    }
-    return false;
+    return true;
 }
 
-// Helper: Square Slider Implementation
 bool TotalMixerGUI::SquareSlider(const char* label, long* value, int min_v, int max_v, const ImVec2& size) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems) return false;
@@ -36,70 +24,75 @@ bool TotalMixerGUI::SquareSlider(const char* label, long* value, int min_v, int 
     const ImGuiStyle& style = g.Style;
     const ImGuiID id = window->GetID(label);
 
-    const ImRect frame_bb(window->DC.CursorPos, ImVec2(window->DC.CursorPos.x + size.x, window->DC.CursorPos.y + size.y));
-    const ImRect total_bb(frame_bb.Min, frame_bb.Max);
+    const ImRect bb(window->DC.CursorPos, ImVec2(window->DC.CursorPos.x + size.x, window->DC.CursorPos.y + size.y));
+    ImGui::ItemSize(bb, style.FramePadding.y);
+    if (!ImGui::ItemAdd(bb, id)) return false;
 
-    ImGui::ItemSize(total_bb, style.FramePadding.y);
-    if (!ImGui::ItemAdd(total_bb, id, &frame_bb)) return false;
-
-    const bool hovered = ImGui::ItemHoverable(frame_bb, id, 0); 
-    bool temp_input_is_active = ImGui::TempInputIsActive(id);
-    if (!temp_input_is_active) {
-        const bool clicked = hovered && ImGui::IsMouseClicked(0, false);
-        if (clicked) {
-            ImGui::SetActiveID(id, window);
-            ImGui::SetFocusID(id, window);
-            ImGui::FocusWindow(window);
-            g.ActiveIdUsingNavDirMask |= (1 << ImGuiDir_Up) | (1 << ImGuiDir_Down);
-        }
+    const bool hovered = ImGui::ItemHoverable(bb, id, g.LastItemData.ItemFlags);
+    bool temp_active = ImGui::TempInputIsActive(id);
+    if (temp_active) {
+        // If input active, don't handle slider
+        return false; 
     }
 
+    bool pressed = hovered && ImGui::IsMouseClicked(0, id);
+    if (pressed) {
+        ImGui::SetActiveID(id, window);
+        ImGui::SetFocusID(id, window);
+    }
+    
     bool value_changed = false;
     if (g.ActiveId == id) {
-        if (g.ActiveIdSource == ImGuiInputSource_Mouse) {
-            if (!g.IO.MouseDown[0]) {
-                ImGui::ClearActiveID();
-            } else {
-                float mouse_delta = g.IO.MouseDelta.y;
-                if (mouse_delta != 0.0f) {
-                    float speed = (g.IO.KeyShift ? 10.0f : 150.0f);
-                    float range = (float)(max_v - min_v);
-                    float step = range / (200.0f); 
-                    
-                    float v_float = (float)*value;
-                    v_float -= mouse_delta * step; 
-                    
-                    if (v_float < (float)min_v) v_float = (float)min_v;
-                    if (v_float > (float)max_v) v_float = (float)max_v;
-                    *value = (long)v_float;
+        if (g.IO.MouseDown[0]) {
+            float mouse_delta_y = g.IO.MouseDelta.y;
+            if (mouse_delta_y != 0.0f) {
+                // Determine speed based on dB range logic
+                // For simplicity, linear raw mapping but scaled
+                // Range is 65536. 
+                // Let's use a dynamic scale based on current value?
+                // Or just fixed raw steps.
+                
+                float speed = 300.0f; // raw units per pixel
+                if (ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift)) speed = 50.0f;
+                
+                long change = (long)(-mouse_delta_y * speed);
+                long new_val = *value + change;
+                if (new_val < min_v) new_val = min_v;
+                if (new_val > max_v) new_val = max_v;
+                
+                if (new_val != *value) {
+                    *value = new_val;
                     value_changed = true;
                 }
             }
+        } else {
+            ImGui::ClearActiveID();
         }
     }
 
-    ImU32 frame_col = ImGui::GetColorU32(g.ActiveId == id ? ImGuiCol_FrameBgActive : hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
-    ImGui::RenderNavHighlight(frame_bb, id);
+    // Render
+    float fraction = (float)(*value - min_v) / (float)(max_v - min_v);
     
-    window->DrawList->AddRectFilled(frame_bb.Min, frame_bb.Max, ImGui::GetColorU32(ImVec4(0.15f, 0.15f, 0.15f, 1.0f)));
+    // Background
+    window->DrawList->AddRectFilled(bb.Min, bb.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), style.FrameRounding);
     
-    float range = (float)(max_v - min_v);
-    float t = (*value - min_v) / range;
-    t = ImClamp(t, 0.0f, 1.0f);
+    // Fill (Volume bar)
+    // Vertical fill
+    float fill_h = (bb.Max.y - bb.Min.y) * fraction;
+    ImRect fill_bb(ImVec2(bb.Min.x, bb.Max.y - fill_h), bb.Max);
+    window->DrawList->AddRectFilled(fill_bb.Min, fill_bb.Max, ImGui::GetColorU32(ImGuiCol_SliderGrab), style.FrameRounding);
     
-    float fill_h = size.y * t;
-    ImRect fill_bb = frame_bb;
-    fill_bb.Min.y = frame_bb.Max.y - fill_h;
+    // Border
+    window->DrawList->AddRect(bb.Min, bb.Max, ImGui::GetColorU32(ImGuiCol_Border), style.FrameRounding);
     
-    ImVec4 fill_color = (*value > 59294) ? ImVec4(1.0f, 0.4f, 0.0f, 1.0f) : ImVec4(0.0f, 0.7f, 0.0f, 1.0f);
-    window->DrawList->AddRectFilled(fill_bb.Min, fill_bb.Max, ImGui::GetColorU32(fill_color));
-    
-    window->DrawList->AddRect(frame_bb.Min, frame_bb.Max, ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.3f, 1.0f)));
-    
+    // Text (dB value)
+    char buf[32];
     std::string db_str = val_to_db_str(*value);
-    ImVec2 text_size = ImGui::CalcTextSize(db_str.c_str());
-    ImVec2 text_pos = ImVec2(frame_bb.Min.x + (size.x - text_size.x) * 0.5f, frame_bb.Min.y + (size.y - text_size.y) * 0.5f);
-    window->DrawList->AddText(text_pos, ImGui::GetColorU32(ImVec4(0.9f, 0.9f, 0.9f, 1.0f)), db_str.c_str());
+    snprintf(buf, 32, "%s", db_str.c_str());
+    
+    ImVec2 text_size = ImGui::CalcTextSize(buf);
+    ImVec2 text_pos = ImVec2(bb.Min.x + (bb.GetSize().x - text_size.x) * 0.5f, bb.Max.y - text_size.y - 2);
+    window->DrawList->AddText(text_pos, ImGui::GetColorU32(ImGuiCol_Text), buf);
 
     return value_changed;
 }
@@ -144,7 +137,7 @@ TotalMixerGUI::TotalMixerGUI(std::shared_ptr<IMixerBackend> backend)
         std::cout << "GUI: Connected via backend" << std::endl;
         PollHardware(); 
     } else {
-        std::cerr << "GUI Warning: Backend initialization failed" << std::endl;
+        std::cerr << "GUI Warning: Backend initialization failed: " << backend->getStatusMessage() << std::endl;
         connection_status = ConnectionStatus::HardwareNotFound;
     }
 }
@@ -152,10 +145,7 @@ TotalMixerGUI::TotalMixerGUI(std::shared_ptr<IMixerBackend> backend)
 TotalMixerGUI::~TotalMixerGUI() {}
 
 void TotalMixerGUI::CheckServiceStatus() {
-    service_status = ServiceChecker::check_systemd("snd-fireface-ctl.service");
-    if (service_status == ServiceStatus::NotInstalled) {
-        std::cerr << "GUI Warning: snd-fireface-ctl.service not found" << std::endl;
-    }
+    service_status = ServiceChecker::check_status("snd-fireface-ctl.service");
 }
 
 void TotalMixerGUI::PollHardware() {
@@ -212,50 +202,21 @@ void TotalMixerGUI::PollPlaybackMatrix() {
     } catch (...) {}
 }
 
-                        input_matrix_cache[{static_cast<int>(o), global_in}] = (*r)[o];
-                    }
-                }
-            }
-        }
-    } catch (...) {}
-}
-
-void TotalMixerGUI::PollPlaybackMatrix() {
-    try {
-        for (int o = 0; o < 18; ++o) {
-            auto r_pb = alsa->get_matrix_row("mixer:stream-source-gain", o, 18);
-            if (r_pb) {
-                for (size_t i = 0; i < r_pb->size(); ++i) {
-                    if (has_active_matrix_cell && 
-                        active_matrix_cell.first == static_cast<int>(i) && 
-                        active_matrix_cell.second == o) {
-                        continue;
-                    }
-                    playback_matrix_cache[{static_cast<int>(i), o}] = (*r_pb)[i];
-                }
-            }
-        }
-    } catch (...) {}
-}
-
 void TotalMixerGUI::Render() {
+    // Poll every 100ms? 
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_poll_time).count();
     auto since_write = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_write_time).count();
     
-    // Skip polling if:
-    // 1. Any widget is currently active (being dragged)
-    // 2. Less than 200ms since last write to hardware
-    bool any_widget_active = (ImGui::GetActiveID() != 0);
-    bool should_skip_poll = any_widget_active || (since_write < 200);
+    // Don't poll if we just wrote something (wait for hardware to settle)
+    bool should_skip_poll = (since_write < 200);
     
-    if (elapsed > 500 && !should_skip_poll) {
-        std::cout << "[POLL] Executing PollHardware()" << std::endl;
+    // Also skip if any widget is active? (Already handled by active_matrix_cell)
+    bool any_widget_active = ImGui::IsAnyItemActive();
+    
+    if (elapsed > 100 && !should_skip_poll) {
         PollHardware();
         last_poll_time = now;
-    } else if (elapsed > 500 && should_skip_poll) {
-        std::cout << "[POLL] Skipping poll - active:" << any_widget_active 
-                  << " since_write:" << since_write << "ms" << std::endl;
     }
 
     ImGuiIO& io = ImGui::GetIO();
@@ -314,66 +275,31 @@ void TotalMixerGUI::DrawHeader() {
             case ConnectionStatus::ServiceNotRunning:
                 info_str = "ERROR: snd-fireface-ctl.service is NOT RUNNING\n\n";
                 info_str += "This application requires snd-fireface-ctl-service to be running.\n";
-                info_str += "Installation guide:\n";
-                info_str += "https://github.com/oudeis01/linux-fireface-mixer#installation";
                 break;
             case ConnectionStatus::ServiceFailed:
                 info_str = "ERROR: snd-fireface-ctl.service FAILED\n\n";
                 info_str += ServiceChecker::get_help_message(service_status) + "\n\n";
-                info_str += "Installation guide:\n";
-                info_str += "https://github.com/oudeis01/linux-fireface-mixer#installation";
                 break;
             case ConnectionStatus::HardwareNotFound:
-                info_str = "ERROR: Hardware Not Found\n\n";
-                info_str += "Fireface device not detected.\n";
-                info_str += "Check hardware connections and ensure snd-fireface-ctl.service is running.\n\n";
-                info_str += "Setup guide:\n";
-                info_str += "https://github.com/oudeis01/linux-fireface-mixer#installation";
+                info_str = "ERROR: Hardware Not Found or Connection Failed\n\n";
+                info_str += "Backend Status: " + (backend ? backend->getStatusMessage() : "NULL") + "\n";
                 break;
             default:
-                info_str = "ERROR: Hardware Disconnected";
+                info_str = "ERROR: Unknown Error";
                 break;
         }
         
-        int line_count = 1;
-        for (char c : info_str) {
-            if (c == '\n') line_count++;
-        }
-        line_count++;
-        
         ImGui::PushStyleColor(ImGuiCol_Text, error_color);
-        ImGui::InputTextMultiline("##error_info", &info_str, ImVec2(-FLT_MIN, ImGui::GetTextLineHeight()*line_count), ImGuiInputTextFlags_ReadOnly);
+        ImGui::TextWrapped("%s", info_str.c_str());
         ImGui::PopStyleColor();
         
         ImGui::Spacing();
         
-        if (connection_status == ConnectionStatus::ServiceNotRunning) {
-            if (ImGui::Button("Start Service")) {
-                if (ServiceChecker::try_start("snd-fireface-ctl.service")) {
-                    std::cout << "Service start requested, waiting for initialization..." << std::endl;
-                } else {
-                    std::cerr << "Failed to start service via systemd" << std::endl;
-                }
-            }
-            ImGui::SameLine();
-        } else if (connection_status == ConnectionStatus::ServiceFailed) {
-            if (ImGui::Button("Restart Service")) {
-                if (ServiceChecker::try_start("snd-fireface-ctl.service")) {
-                    std::cout << "Service restart requested" << std::endl;
-                }
-            }
-            ImGui::SameLine();
-        }
-        
         if (ImGui::Button("Retry Connection")) {
             CheckServiceStatus();
-            try {
-                alsa = std::make_unique<AlsaCore>();
+            if (backend->initialize()) {
                 connection_status = ConnectionStatus::Connected;
-                std::cout << "GUI: Reconnected to " << alsa->get_card_name() << std::endl;
                 PollHardware();
-            } catch (const std::exception& e) {
-                std::cerr << "Reconnection failed: " << e.what() << std::endl;
             }
         }
         
@@ -382,69 +308,16 @@ void TotalMixerGUI::DrawHeader() {
     }
 
     std::string hw_info = backend->getDeviceName();
+    // Parse info if needed (GUID, etc.) - Simplified for now
     
-    size_t guid_pos = hw_info.find("GUID");
-    if (guid_pos != std::string::npos) {
-        device_info.name = hw_info.substr(0, guid_pos - 2);
-        size_t at_pos = hw_info.find("at", guid_pos);
-        if (at_pos != std::string::npos) {
-            device_info.guid = hw_info.substr(guid_pos + 5, at_pos - guid_pos - 6);
-            size_t comma_pos = hw_info.find(",", at_pos);
-            if (comma_pos != std::string::npos) {
-                device_info.id = hw_info.substr(at_pos + 3, comma_pos - at_pos - 3);
-                device_info.bus_speed = hw_info.substr(comma_pos + 2);
-            } else {
-                device_info.id = hw_info.substr(at_pos + 3);
-            }
-        }
-    } else {
-        device_info.name = hw_info;
-        device_info.guid = "Unknown";
-        device_info.id = "Unknown";
-        device_info.bus_speed = "Unknown";
-    }
+    info_str = "Device: " + hw_info + "\n";
+    info_str += "Backend: " + (backend ? backend->getStatusMessage() : "Unknown") + "\n";
     
-    info_str = "Device: " + device_info.name + "\n";
-    info_str += "GUID: " + device_info.guid + "\n";
-    info_str += "ID: " + device_info.id + "\n";
-    info_str += "Bus Speed: " + device_info.bus_speed + (
-        device_info.bus_speed.find("S400") != std::string::npos ? " (400 Mbps)" : 
-        device_info.bus_speed.find("FW800") != std::string::npos ? " (800 Mbps)" : 
-        device_info.bus_speed.find("S1600") != std::string::npos ? " (1600 Mbps)" : 
-        device_info.bus_speed.find("S3200") != std::string::npos ? " (3200 Mbps)" : 
-        " (Unknown Speed)");
+    std::string service_status_str = "Service: snd-fireface-ctl.service [RUNNING]";
+    ImVec4 service_color = ImVec4(0, 1, 0, 1);
     
-    info_str += "\n";
-    
-    std::string service_status_str;
-    ImVec4 service_color;
-    switch (service_status) {
-        case ServiceStatus::Running:
-            service_status_str = "Service: snd-fireface-ctl.service [RUNNING]";
-            service_color = ImVec4(0, 1, 0, 1);
-            break;
-        case ServiceStatus::NotRunning:
-            service_status_str = "Service: snd-fireface-ctl.service [NOT RUNNING]";
-            service_color = ImVec4(1, 0, 0, 1);
-            break;
-        case ServiceStatus::Failed:
-            service_status_str = "Service: snd-fireface-ctl.service [FAILED]";
-            service_color = ImVec4(1, 0, 0, 1);
-            break;
-        case ServiceStatus::NotInstalled:
-            service_status_str = "Service: snd-fireface-ctl.service [NOT INSTALLED]";
-            service_color = ImVec4(1, 0, 0, 1);
-            break;
-    }
-    
-    int line_count_before = 1;
-    for (char c : info_str) {
-        if (c == '\n') line_count_before++;
-    }
-    line_count_before++;
-
-    ImGui::InputTextMultiline("##device_info", &info_str, ImVec2(-FLT_MIN, ImGui::GetTextLineHeight()*line_count_before), ImGuiInputTextFlags_ReadOnly);
-    
+    ImGui::Text("%s", info_str.c_str());
+    ImGui::SameLine(400);
     ImGui::PushStyleColor(ImGuiCol_Text, service_color);
     ImGui::Text("%s", service_status_str.c_str());
     ImGui::PopStyleColor();
@@ -453,76 +326,8 @@ void TotalMixerGUI::DrawHeader() {
 }
 
 void TotalMixerGUI::DrawControlTab() {
-    ImGui::Text("Device Settings are temporarily disabled during refactoring.");
-    // TODO: Implement generic control API in IMixerBackend
-    /*
-    // Groups
-    struct GroupDef { const char* name; std::vector<const char*> controls; };
-    static const std::vector<GroupDef> groups = {
-        {"Clock Settings", {"primary-clock-source", "word-clock-single-speed", "active-clock-source"}},
-        {"Input Options", {"line-input-level", "line-3/4-inst", "line-3/4-pad", "mic-1/2-powering"}},
-        {"Output Levels", {"line-output-level", "headphone-output-level", "optical-output-signal"}},
-        {"S/PDIF Config", {"spdif-input-interface", "spdif-output-format", "spdif-output-non-audio"}}
-    };
-
-    ImGui::BeginChild("ControlTab", ImVec2(0,0), true);
-    ImGui::Columns(2, "ControlCols", false);
-    
-    for (const auto& grp : groups) {
-        ImGui::BeginGroup();
-        ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "[ %s ]", grp.name);
-        ImGui::Separator();
-        
-        for (const char* c_name : grp.controls) {
-            if (!alsa) continue;
-            auto info = alsa->get_control_info(c_name, 0);
-            if (!info) continue;
-            auto val = alsa->get_control_value(c_name, 0);
-            if (!val) continue;
-
-            int count = info->count;
-            std::vector<long> values = val->int_values;
-            if (values.size() < (size_t)count) values.resize(count, values.empty() ? 0 : values[0]);
-
-            for (int i = 0; i < count; ++i) {
-                ImGui::PushID(c_name); ImGui::PushID(i);
-                std::string label = std::string(c_name);
-                if (count > 1) label += " (" + std::to_string(i+1) + ")";
-                
-                ImGui::Text("%s:", label.c_str()); ImGui::SameLine(200); 
-                
-                if (info->type == "Enum") {
-                    int current_idx = (int)values[i];
-                    if (current_idx >= 0 && current_idx < (int)info->enum_items.size()) {
-                        // ImGui Combo
-                        // Need const char* array for combo
-                        std::vector<const char*> items;
-                        for (const auto& s : info->enum_items) items.push_back(s.c_str());
-                        
-                        int temp_idx = current_idx;
-                        if (ImGui::Combo("##combo", &temp_idx, items.data(), items.size())) {
-                            values[i] = temp_idx;
-                            alsa->set_control_value(c_name, 0, values);
-                        }
-                    }
-                } else if (info->type == "Bool") {
-                    bool b_val = (values[i] != 0);
-                    if (ImGui::Checkbox("##chk", &b_val)) {
-                        values[i] = b_val ? 1 : 0;
-                        alsa->set_control_value(c_name, 0, values);
-                    }
-                    ImGui::SameLine(); ImGui::Text(b_val ? "ON" : "OFF");
-                }
-                ImGui::PopID(); ImGui::PopID();
-            }
-        }
-        ImGui::EndGroup();
-        ImGui::Spacing(); ImGui::Spacing();
-        ImGui::NextColumn();
-    }
-    ImGui::Columns(1);
-    ImGui::EndChild();
-    */
+    ImGui::Text("Device Settings are disabled in this version.");
+    ImGui::Text("Please use alsamixer or vendor tools for Clock/SPDIF settings.");
 }
 
 void TotalMixerGUI::DrawMatrixTab(const char* title, bool is_playback) {
@@ -538,7 +343,6 @@ void TotalMixerGUI::DrawMatrixTab(const char* title, bool is_playback) {
         for (int i = 0; i < 18; ++i) ImGui::TableSetupColumn(out_labels[i].c_str(), ImGuiTableColumnFlags_WidthFixed, 45.0f);
         
         ImGui::TableSetupScrollFreeze(1, 1);
-        
         ImGui::TableHeadersRow();
 
         for (int r = 0; r < 18; ++r) {
@@ -563,19 +367,15 @@ void TotalMixerGUI::DrawMatrixTab(const char* title, bool is_playback) {
                 }
                 
                 if (changed && val != val_before) {
-                    std::cout << "[SLIDER] Mat[" << r << "," << c << "] changed: " 
-                              << val_before << " -> " << val << std::endl;
+                    // std::cout << "[SLIDER] Changed" << std::endl;
                 }
                 
-                if (alsa && ImGui::IsItemDeactivatedAfterEdit()) {
+                if (backend && ImGui::IsItemDeactivatedAfterEdit()) {
                     has_active_matrix_cell = false;
-                    std::string mixer_name = is_playback ? "mixer:stream-source-gain" : 
-                                            (r < 8 ? "mixer:analog-source-gain" : 
-                                            (r < 10 ? "mixer:spdif-source-gain" : "mixer:adat-source-gain"));
-                    int hw_in_idx = is_playback ? r : (r < 8 ? r : (r < 10 ? r-8 : r-10));
-                    alsa->set_matrix_gain(mixer_name, c, hw_in_idx, val);
+                    float db = val_to_db(val);
+                    int src_ch = is_playback ? (18 + r) : r;
+                    backend->setMatrixGain(c, src_ch, db);
                     last_write_time = std::chrono::steady_clock::now();
-                    std::cout << "Write Matrix [" << c+1 << "<-" << r+1 << "]: " << val << std::endl;
                 }
             }
         }
@@ -617,11 +417,9 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
     
     std::string id = "##" + std::string(label);
     float v_float = (float)*value;
-    bool fader_changed = false;
+    
     if (ImGui::VSliderFloat(id.c_str(), ImVec2(fader_w, 140), &v_float, (float)min_v, (float)max_v, "")) {
         *value = (long)v_float;
-        fader_changed = true;
-        
         if (ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
             int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
             if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
@@ -639,14 +437,12 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
         float db = val_to_db(*value);
         backend->setOutputVolume(ch_idx, db);
         last_write_time = std::chrono::steady_clock::now();
-        std::cout << "Write Master [" << ch_idx+1 << "]: " << *value << " (" << db << " dB)" << std::endl;
         
         if (ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
             int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
             if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
                 float pair_db = val_to_db(master_states[pair_idx].value);
                 backend->setOutputVolume(pair_idx, pair_db);
-                std::cout << "Write Master [" << pair_idx+1 << "] (linked): " << master_states[pair_idx].value << std::endl;
             }
         }
     }
@@ -674,7 +470,6 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
                     float db = val_to_db(*value);
                     backend->setOutputVolume(ch_idx, db);
                     last_write_time = std::chrono::steady_clock::now();
-                    std::cout << "Write Master [" << ch_idx+1 << "] from input: " << *value << std::endl;
                     
                     if (ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
                         int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
@@ -682,7 +477,6 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
                             master_states[pair_idx].value = *value;
                             float pair_db = val_to_db(*value);
                             backend->setOutputVolume(pair_idx, pair_db);
-                            std::cout << "Write Master [" << pair_idx+1 << "] from input (linked): " << *value << std::endl;
                         }
                     }
                 }
@@ -691,7 +485,6 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
         }
         
         ImGui::TextDisabled("Range: -inf to +6.00 dB");
-        
         ImGui::EndPopup();
     }
     
