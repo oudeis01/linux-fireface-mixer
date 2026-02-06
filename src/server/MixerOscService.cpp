@@ -22,6 +22,7 @@ bool MixerOscService::start() {
     // Add methods
     lo_server_thread_add_method(st, "/totalmixer/matrix", "iif", generic_handler, this);
     lo_server_thread_add_method(st, "/totalmixer/output", "if", generic_handler, this);
+    lo_server_thread_add_method(st, "/totalmixer/sync", "i", sync_handler, this);
     
     // Add generic handler for debugging
     // lo_server_thread_add_method(st, NULL, NULL, generic_handler, this);
@@ -65,6 +66,39 @@ int MixerOscService::generic_handler(const char *path, const char *types, lo_arg
     }
 
     return 1; // Unhandled
+}
+
+int MixerOscService::sync_handler(const char *path, const char *types, lo_arg **argv,
+                                  int argc, lo_message msg, void *user_data) {
+    auto* self = static_cast<MixerOscService*>(user_data);
+    if (!self || !self->backend) return 1;
+
+    lo_address src = lo_message_get_source(msg);
+    const char* ip = lo_address_get_hostname(src);
+    int client_port = argv[0]->i;
+    
+    lo_address client_addr = lo_address_new(ip, std::to_string(client_port).c_str());
+    
+    std::cout << "Sync request from " << ip << ":" << client_port << ". Sending state..." << std::endl;
+
+    // Send Outputs
+    for (int i = 0; i < 18; ++i) {
+        float val = self->backend->getOutputVolume(i);
+        lo_send(client_addr, "/totalmixer/output", "if", i, val);
+    }
+    
+    // Send Matrix (only non-muted to save bandwidth)
+    for (int src_ch = 0; src_ch < 36; ++src_ch) {
+        for (int out_ch = 0; out_ch < 18; ++out_ch) {
+            float val = self->backend->getMatrixGain(out_ch, src_ch);
+            if (val > -99.0f) { 
+                lo_send(client_addr, "/totalmixer/matrix", "iif", out_ch, src_ch, val);
+            }
+        }
+    }
+    
+    lo_address_free(client_addr);
+    return 0;
 }
 
 } // namespace TotalMixer

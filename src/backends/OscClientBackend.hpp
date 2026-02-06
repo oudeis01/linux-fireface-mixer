@@ -47,6 +47,14 @@ private:
     // Local cache
     std::vector<float> matrix_cache; 
     std::vector<float> output_cache;
+    
+    // Listener for sync
+    lo_server_thread listener = nullptr;
+    
+    static int output_handler(const char *path, const char *types, lo_arg **argv,
+                              int argc, lo_message msg, void *user_data);
+    static int matrix_handler(const char *path, const char *types, lo_arg **argv,
+                              int argc, lo_message msg, void *user_data);
 };
 
 }

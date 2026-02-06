@@ -22,6 +22,9 @@ private:
 
     static int generic_handler(const char *path, const char *types, lo_arg **argv,
                                int argc, lo_message msg, void *user_data);
+
+    static int sync_handler(const char *path, const char *types, lo_arg **argv,
+                            int argc, lo_message msg, void *user_data);
 };
 
 }

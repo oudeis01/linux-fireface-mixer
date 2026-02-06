@@ -16,17 +16,37 @@ OscClientBackend::~OscClientBackend() {
 
 bool OscClientBackend::initialize() {
     lo_addr = lo_address_new(target_ip.c_str(), target_port.c_str());
-    if (lo_addr) {
-        connected = true;
-        status_msg = "OSC Target: " + target_ip + ":" + target_port;
-        return true;
-    } else {
+    if (!lo_addr) {
         status_msg = "Failed to create OSC address";
         return false;
     }
+
+    // Start Listener for Sync
+    listener = lo_server_thread_new(NULL, NULL); // Random port
+    if (listener) {
+        lo_server_thread_add_method(listener, "/totalmixer/output", "if", output_handler, this);
+        lo_server_thread_add_method(listener, "/totalmixer/matrix", "iif", matrix_handler, this);
+        lo_server_thread_start(listener);
+        
+        int listen_port = lo_server_thread_get_port(listener);
+        std::cout << "OSC Client listening on port " << listen_port << ", requesting sync..." << std::endl;
+        
+        // Request Sync
+        lo_send(lo_addr, "/totalmixer/sync", "i", listen_port);
+    } else {
+        std::cerr << "Failed to start OSC listener thread" << std::endl;
+    }
+
+    connected = true;
+    status_msg = "OSC Target: " + target_ip + ":" + target_port;
+    return true;
 }
 
 void OscClientBackend::shutdown() {
+    if (listener) {
+        lo_server_thread_free(listener);
+        listener = nullptr;
+    }
     if (lo_addr) {
         lo_address_free(lo_addr);
         lo_addr = nullptr;
@@ -89,6 +109,31 @@ bool OscClientBackend::getMeterLevels(MeterData& out_meters) {
 
 void OscClientBackend::update() {
     // Process incoming OSC bundles if we implement a listener later
+}
+
+int OscClientBackend::output_handler(const char *path, const char *types, lo_arg **argv,
+                                     int argc, lo_message msg, void *user_data) {
+    auto* self = static_cast<OscClientBackend*>(user_data);
+    int ch = argv[0]->i;
+    float val = argv[1]->f;
+    if (ch < (int)self->output_cache.size()) {
+        self->output_cache[ch] = val;
+    }
+    return 0;
+}
+
+int OscClientBackend::matrix_handler(const char *path, const char *types, lo_arg **argv,
+                                     int argc, lo_message msg, void *user_data) {
+    auto* self = static_cast<OscClientBackend*>(user_data);
+    int out = argv[0]->i;
+    int src = argv[1]->i;
+    float val = argv[2]->f;
+    
+    int idx = src * 18 + out;
+    if (idx < (int)self->matrix_cache.size()) {
+        self->matrix_cache[idx] = val;
+    }
+    return 0;
 }
 
 } // namespace TotalMixer
