@@ -38,7 +38,7 @@ bool TotalMixerGUI::SquareSlider(const char* label, long* value, int min_v, int 
         return false; 
     }
 
-    bool pressed = hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left, id);
+    bool pressed = hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left, 0, id);
     if (pressed) {
         ImGui::SetActiveID(id, window);
         ImGui::SetFocusID(id, window);
