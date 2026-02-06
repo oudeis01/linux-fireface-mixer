@@ -39,7 +39,8 @@ void MixerOscService::stop() {
 }
 
 int MixerOscService::generic_handler(const char *path, const char *types, lo_arg **argv,
-                                     int argc, void *data, void *user_data) {
+                                     int argc, lo_message msg, void *user_data) {
+    (void)msg; // Unused
     auto* self = static_cast<MixerOscService*>(user_data);
     if (!self || !self->backend) return 1;
 
