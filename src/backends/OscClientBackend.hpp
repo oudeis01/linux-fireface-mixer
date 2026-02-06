@@ -46,8 +46,6 @@ private:
     // Local cache
     std::vector<float> matrix_cache; 
     std::vector<float> output_cache;
-    
-    void sendOsc(const char* path, const char* types, ...);
 };
 
 }

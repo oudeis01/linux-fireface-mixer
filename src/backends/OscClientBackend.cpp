@@ -39,14 +39,6 @@ bool OscClientBackend::isConnected() const { return connected; }
 std::string OscClientBackend::getDeviceName() const { return "OSC Remote (" + target_ip + ")"; }
 std::string OscClientBackend::getStatusMessage() const { return status_msg; }
 
-void OscClientBackend::sendOsc(const char* path, const char* types, ...) {
-    if (!lo_addr) return;
-    va_list ap;
-    va_start(ap, types);
-    lo_send_message_from_args(lo_addr, lo_address_get_entry(lo_addr), path, types, ap);
-    va_end(ap);
-}
-
 bool OscClientBackend::setMatrixGain(int output_ch, int source_ch, float gain_db) {
     if (!connected) return false;
 
