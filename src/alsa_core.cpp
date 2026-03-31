@@ -131,6 +131,10 @@ int AlsaCore::_find_iface(const std::string& name) {
 }
 
 std::optional<ControlInfo> AlsaCore::get_control_info(const std::string& name, unsigned int index) {
+    if (ctl_info_cache.find({name, index}) != ctl_info_cache.end()) {
+        return ctl_info_cache[{name, index}];
+    }
+
     int iface = _find_iface(name);
     if (iface == -1) {
         list_all_controls(); // Refresh cache
@@ -168,6 +172,7 @@ std::optional<ControlInfo> AlsaCore::get_control_info(const std::string& name, u
         }
     }
 
+    ctl_info_cache[{name, index}] = result;
     return result;
 }
 
@@ -175,16 +180,16 @@ std::optional<ControlValue> AlsaCore::get_control_value(const std::string& name,
     int iface = _find_iface(name);
     if (iface == -1) return std::nullopt;
 
+    auto info_opt = get_control_info(name, index);
+    if (!info_opt) return std::nullopt;
+    auto& info = *info_opt;
+
     snd_ctl_elem_id_set_interface(id_ptr, (snd_ctl_elem_iface_t)iface);
     snd_ctl_elem_id_set_name(id_ptr, name.c_str());
     snd_ctl_elem_id_set_index(id_ptr, index);
     
     snd_ctl_elem_value_set_id(val_ptr, id_ptr);
     if (snd_ctl_elem_read(handle, val_ptr) < 0) return std::nullopt;
-
-    auto info_opt = get_control_info(name, index);
-    if (!info_opt) return std::nullopt;
-    auto& info = *info_opt;
 
     ControlValue result;
     
@@ -194,7 +199,6 @@ std::optional<ControlValue> AlsaCore::get_control_value(const std::string& name,
         if (idx < info.enum_items.size()) {
             result.enum_string = info.enum_items[idx];
         }
-        // Also store the index in int_values for convenience
         result.int_values.push_back(idx);
     } else {
         result.is_enum = false;
@@ -216,12 +220,7 @@ bool AlsaCore::set_control_value(const std::string& name, unsigned int index, lo
     
     snd_ctl_elem_value_set_id(val_ptr, id_ptr);
     
-    // Read first to preserve other channels if we are only setting one (though implementation here sets one index)
-    // Actually standard behavior is read-modify-write usually
-    snd_ctl_elem_read(handle, val_ptr);
-    
-    // Logic from python: if generic value, set index 0?
-    // Python: asound.snd_ctl_elem_value_set_integer(self.val_ptr, 0, value)
+    // We already do a write-only update for single values
     snd_ctl_elem_value_set_integer(val_ptr, 0, value);
 
     return snd_ctl_elem_write(handle, val_ptr) >= 0;
@@ -284,15 +283,25 @@ std::optional<std::vector<long>> AlsaCore::get_matrix_row(const std::string& nam
     return std::nullopt;
 }
 
-bool AlsaCore::set_matrix_gain(const std::string& name, unsigned int out_idx, unsigned int in_idx, long val) {
-    auto current_opt = get_control_value(name, out_idx);
-    if (!current_opt) return false;
+bool AlsaCore::set_matrix_gain(const std::string& name, unsigned int alsa_ctrl_idx, unsigned int element_idx, long val) {
+    auto current_opt = get_control_value(name, alsa_ctrl_idx);
+    if (!current_opt) {
+        std::cerr << "set_matrix_gain: get_control_value failed for " << name << "[" << alsa_ctrl_idx << "]" << std::endl;
+        return false;
+    }
     
     std::vector<long> current = current_opt->int_values;
-    if (in_idx >= current.size()) return false;
+    if (element_idx >= current.size()) {
+        std::cerr << "set_matrix_gain: element_idx " << element_idx << " >= size " << current.size() << std::endl;
+        return false;
+    }
     
-    current[in_idx] = val;
-    return set_control_value(name, out_idx, current);
+    current[element_idx] = val;
+    bool result = set_control_value(name, alsa_ctrl_idx, current);
+    if (!result) {
+        std::cerr << "set_matrix_gain: set_control_value failed for " << name << "[" << alsa_ctrl_idx << "] element " << element_idx << std::endl;
+    }
+    return result;
 }
 
 AlsaCore::HwInfo AlsaCore::get_hw_info() {

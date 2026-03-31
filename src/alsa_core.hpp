@@ -53,7 +53,7 @@ public:
 
     // Matrix helper
     std::optional<std::vector<long>> get_matrix_row(const std::string& name, unsigned int index, unsigned int count = 18);
-    bool set_matrix_gain(const std::string& name, unsigned int out_idx, unsigned int in_idx, long val);
+    bool set_matrix_gain(const std::string& name, unsigned int alsa_ctrl_idx, unsigned int element_idx, long val);
 
     // Hardware Info Helper
     struct HwInfo {
@@ -74,6 +74,7 @@ private:
     snd_ctl_card_info_t* card_info_ptr = nullptr;
 
     std::map<std::string, int> ctl_iface_cache;
+    std::map<std::pair<std::string, unsigned int>, ControlInfo> ctl_info_cache;
 
     int _find_iface(const std::string& name);
     static int find_fireface_card();

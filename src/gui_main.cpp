@@ -27,7 +27,7 @@ int main(int, char**) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
 
     // Create window
-    GLFWwindow* window = glfwCreateWindow(1400, 950, "Linux TotalMix v2 (C++)", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(1700, 1000, "Linux TotalMix v2 (C++)", nullptr, nullptr);
     if (window == nullptr)
         return 1;
     glfwMakeContextCurrent(window);

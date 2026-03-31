@@ -58,7 +58,7 @@ private:
     void DrawHeader();
     void DrawControlTab();
     void DrawMatrixTab(const char* title, bool is_playback);
-    void DrawMasterSection();
+    void DrawMasterSection(float height);
     void DrawFader(const char* label, long* value, int min_v, int max_v, int ch_idx);
     bool SquareSlider(const char* label, long* value, int min_v, int max_v, const ImVec2& size);
 
@@ -74,6 +74,7 @@ private:
     
     // Masters: index -> state
     std::vector<ChannelState> master_states;
+    std::vector<std::chrono::steady_clock::time_point> master_last_write_time;
 
     // Safety: Throttling
     std::chrono::steady_clock::time_point last_poll_time;

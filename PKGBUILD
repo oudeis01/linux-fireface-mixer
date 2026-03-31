@@ -1,7 +1,7 @@
 # Maintainer: Haram Choi <altitudinem at google dot com>
 pkgname=linux-fireface-mixer
-pkgver=0.1.0
-pkgrel=2
+pkgver=0.1.1
+pkgrel=1
 pkgdesc="GUI mixer application for RME Fireface 400 on Linux"
 arch=('x86_64')
 url="https://github.com/oudeis01/linux-fireface-mixer"

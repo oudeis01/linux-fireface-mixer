@@ -55,6 +55,26 @@ bool TotalMixerGUI::SquareSlider(const char* label, long* value, int min_v, int 
     }
 
     bool value_changed = false;
+
+    // Mouse Wheel Support
+    if (hovered && g.IO.MouseWheel != 0.0f) {
+        float wheel_delta = g.IO.MouseWheel;
+        float range = (float)(max_v - min_v);
+        float step = range / 63.0f; // Step by one hardware knob unit
+        
+        float v_float = (float)*value;
+        v_float += wheel_delta * step;
+        
+        if (v_float < (float)min_v) v_float = (float)min_v;
+        if (v_float > (float)max_v) v_float = (float)max_v;
+        
+        // Snap to 0 if very close to bottom to ensure Mute
+        if (v_float < (range / 200.0f)) v_float = 0.0f;
+
+        *value = (long)v_float;
+        value_changed = true;
+    }
+
     if (g.ActiveId == id) {
         if (g.ActiveIdSource == ImGuiInputSource_Mouse) {
             if (!g.IO.MouseDown[0]) {
@@ -71,6 +91,10 @@ bool TotalMixerGUI::SquareSlider(const char* label, long* value, int min_v, int 
                     
                     if (v_float < (float)min_v) v_float = (float)min_v;
                     if (v_float > (float)max_v) v_float = (float)max_v;
+                    
+                    // Snap to 0 if very close to bottom
+                    if (v_float < (range / 200.0f)) v_float = 0.0f;
+
                     *value = (long)v_float;
                     value_changed = true;
                 }
@@ -101,6 +125,54 @@ bool TotalMixerGUI::SquareSlider(const char* label, long* value, int min_v, int 
     ImVec2 text_pos = ImVec2(frame_bb.Min.x + (size.x - text_size.x) * 0.5f, frame_bb.Min.y + (size.y - text_size.y) * 0.5f);
     window->DrawList->AddText(text_pos, ImGui::GetColorU32(ImVec4(0.9f, 0.9f, 0.9f, 1.0f)), db_str.c_str());
 
+    // Right-click Popup for Matrix Slider
+    std::string popup_id = "MatPopup_" + std::string(label);
+    if (hovered && ImGui::IsMouseClicked(1)) {
+        ImGui::OpenPopup(popup_id.c_str());
+    }
+
+    if (ImGui::BeginPopup(popup_id.c_str())) {
+        ImGui::Text("Matrix Gain: %s -> %s", label, db_str.c_str());
+        ImGui::Separator();
+        
+        static std::string input_buffer;
+        if (ImGui::IsWindowAppearing()) {
+            input_buffer = val_to_db_str(*value);
+            if (!input_buffer.empty() && input_buffer[0] == '+') input_buffer = input_buffer.substr(1);
+        }
+
+        ImGui::SetNextItemWidth(120);
+        if (ImGui::InputText("##db_input", &input_buffer, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            *value = db_str_to_val(input_buffer);
+            value_changed = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine(); ImGui::Text("dB");
+
+        ImGui::Spacing();
+        ImGui::TextDisabled("Presets:");
+        
+        float presets[] = {6.0f, 0.0f, -5.0f, -10.0f, -15.0f, -20.0f, -30.0f, -40.0f, -50.0f};
+        for (int i = 0; i < 9; i++) {
+            char b_lab[16];
+            snprintf(b_lab, sizeof(b_lab), "%+.1f", presets[i]);
+            if (ImGui::Button(b_lab, ImVec2(50, 0))) {
+                *value = db_str_to_val(std::string(b_lab));
+                value_changed = true;
+                ImGui::CloseCurrentPopup();
+            }
+            if ((i + 1) % 3 != 0) ImGui::SameLine();
+        }
+        
+        if (ImGui::Button("-inf (Mute)", ImVec2(160, 0))) {
+            *value = 0;
+            value_changed = true;
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
+
     return value_changed;
 }
 
@@ -122,6 +194,7 @@ TotalMixerGUI::TotalMixerGUI()
     };
 
     master_states.resize(18);
+    master_last_write_time.resize(18, std::chrono::steady_clock::now() - std::chrono::seconds(10));
 
     // Check service status first
     CheckServiceStatus();
@@ -172,7 +245,12 @@ void TotalMixerGUI::PollMasterVolumes() {
     try {
         auto mv = alsa->get_matrix_row("output-volume", 0, 18);
         if (mv) {
+            auto now = std::chrono::steady_clock::now();
             for (size_t i = 0; i < mv->size() && i < 18; ++i) {
+                // Skip updating if this specific fader was written to in the last 2000ms
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - master_last_write_time[i]).count();
+                if (elapsed < 2000) continue; 
+                
                 master_states[i].value = (*mv)[i];
             }
         }
@@ -243,7 +321,7 @@ void TotalMixerGUI::Render() {
     }
 
     ImGuiIO& io = ImGui::GetIO();
-    float scale = io.DisplaySize.x / 1400.0f;
+    float scale = io.DisplaySize.x / 1600.0f; // Adjusted reference width for 18 channels
     if (scale < 0.5f) scale = 0.5f; if (scale > 2.0f) scale = 2.0f;
     io.FontGlobalScale = scale;
     
@@ -279,7 +357,7 @@ void TotalMixerGUI::Render() {
     }
     ImGui::EndChild();
     
-    DrawMasterSection();
+    DrawMasterSection(master_h);
     
     if (!ui_enabled) {
         ImGui::EndDisabled();
@@ -545,17 +623,27 @@ void TotalMixerGUI::DrawMatrixTab(const char* title, bool is_playback) {
                 if (changed && val != val_before) {
                     std::cout << "[SLIDER] Mat[" << r << "," << c << "] changed: " 
                               << val_before << " -> " << val << std::endl;
+                    
+                    if (alsa && ShouldWrite(ImGui::GetID(id.c_str()))) {
+                        std::string mixer_name = is_playback ? "mixer:stream-source-gain" : 
+                                                (r < 8 ? "mixer:analog-source-gain" : 
+                                                (r < 10 ? "mixer:spdif-source-gain" : "mixer:adat-source-gain"));
+                        int hw_in_idx = is_playback ? r : (r < 8 ? r : (r < 10 ? r-8 : r-10));
+                        bool success = alsa->set_matrix_gain(mixer_name, hw_in_idx, c, val);
+                        if (success) {
+                            last_write_time = std::chrono::steady_clock::now();
+                            std::cout << "Write Matrix [" << c+1 << "<-" << r+1 << "]: " << val << " SUCCESS" << std::endl;
+                        } else {
+                            std::cerr << "Write Matrix [" << c+1 << "<-" << r+1 << "]: " << val << " FAILED" << std::endl;
+                        }
+                    }
                 }
                 
-                if (alsa && ImGui::IsItemDeactivatedAfterEdit()) {
+                if (ImGui::IsItemActive()) {
+                    active_matrix_cell = {c, r};
+                    has_active_matrix_cell = true;
+                } else if (has_active_matrix_cell && active_matrix_cell.first == c && active_matrix_cell.second == r) {
                     has_active_matrix_cell = false;
-                    std::string mixer_name = is_playback ? "mixer:stream-source-gain" : 
-                                            (r < 8 ? "mixer:analog-source-gain" : 
-                                            (r < 10 ? "mixer:spdif-source-gain" : "mixer:adat-source-gain"));
-                    int hw_in_idx = is_playback ? r : (r < 8 ? r : (r < 10 ? r-8 : r-10));
-                    alsa->set_matrix_gain(mixer_name, c, hw_in_idx, val);
-                    last_write_time = std::chrono::steady_clock::now();
-                    std::cout << "Write Matrix [" << c+1 << "<-" << r+1 << "]: " << val << std::endl;
                 }
             }
         }
@@ -564,23 +652,26 @@ void TotalMixerGUI::DrawMatrixTab(const char* title, bool is_playback) {
     ImGui::EndChild();
 }
 
-void TotalMixerGUI::DrawMasterSection() {
-    ImGui::BeginChild("MasterSection", ImVec2(0, 220), true, ImGuiWindowFlags_HorizontalScrollbar);
-    ImGui::Text("Hardware Outputs");
+void TotalMixerGUI::DrawMasterSection(float height) {
+    ImGui::BeginChild("MasterSection", ImVec2(0, height), true, ImGuiWindowFlags_None); // No forced scroll if possible
+    ImGui::TextColored(ImVec4(0.7f, 1.0f, 0.7f, 1.0f), "HARDWARE OUTPUTS");
     ImGui::Separator();
-    
+
+    ImGui::Spacing();
     for (size_t i = 0; i < out_labels.size(); ++i) {
-        if (i > 0) ImGui::SameLine();
+        if (i > 0) ImGui::SameLine(0, 15.0f); // More space between fader groups
         ImGui::PushID((int)i);
-        DrawFader(out_labels[i].c_str(), &master_states[i].value, 0, 65536, i);
+        DrawFader(out_labels[i].c_str(), &master_states[i].value, 0, 65536, (int)i);
         ImGui::PopID();
     }
     ImGui::EndChild();
 }
 
+
 void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max_v, int ch_idx) {
     ImGui::BeginGroup();
     
+    std::string db_str = val_to_db_str(*value);
     float fader_w = 40.0f;
     float group_w = 70.0f; 
     float offset = (group_w - fader_w) / 2.0f;
@@ -598,80 +689,117 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
     std::string id = "##" + std::string(label);
     float v_float = (float)*value;
     bool fader_changed = false;
-    if (ImGui::VSliderFloat(id.c_str(), ImVec2(fader_w, 140), &v_float, (float)min_v, (float)max_v, "")) {
+    bool force_write = false;
+    
+    // Mouse Wheel Support for Master Fader
+    if (ImGui::IsItemHovered() && ImGui::GetIO().MouseWheel != 0.0f) {
+        float wheel_delta = ImGui::GetIO().MouseWheel;
+        float range = (float)(max_v - min_v);
+        float step = range / 63.0f;
+        v_float += wheel_delta * step;
+        if (v_float < (float)min_v) v_float = (float)min_v;
+        if (v_float > (float)max_v) v_float = (float)max_v;
+        
+        // Mute Snap
+        if (v_float < (range / 200.0f)) v_float = 0.0f;
+        
         *value = (long)v_float;
         fader_changed = true;
+    }
+
+    if (ImGui::VSliderFloat(id.c_str(), ImVec2(fader_w, 140), &v_float, (float)min_v, (float)max_v, "")) {
+        *value = (long)v_float;
+        // Mute Snap
+        if (v_float < ((float)(max_v - min_v) / 200.0f)) *value = 0;
         
-        if (ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
-            int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
-            if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
-                master_states[pair_idx].value = *value;
-            }
+        fader_changed = true;
+    }
+
+    // Link handling
+    if (fader_changed && ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
+        int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
+        if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
+            master_states[pair_idx].value = *value;
         }
     }
-    
+
     std::string popup_id = "FaderInput_" + std::string(label);
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
         ImGui::OpenPopup(popup_id.c_str());
     }
     
-    if (alsa && ImGui::IsItemDeactivatedAfterEdit()) {
-        alsa->set_matrix_gain("output-volume", 0, ch_idx, *value);
-        last_write_time = std::chrono::steady_clock::now();
-        std::cout << "Write Master [" << ch_idx+1 << "]: " << *value << std::endl;
-        
-        if (ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
-            int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
-            if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
-                alsa->set_matrix_gain("output-volume", 0, pair_idx, master_states[pair_idx].value);
-                std::cout << "Write Master [" << pair_idx+1 << "] (linked): " << master_states[pair_idx].value << std::endl;
-            }
-        }
-    }
-    
     if (ImGui::BeginPopup(popup_id.c_str())) {
-        ImGui::Text("Enter dB value:");
+        ImGui::Text("Volume: %s -> %s", label, db_str.c_str());
         ImGui::Separator();
         
         static std::string input_buffer;
-        std::string input_id = "##input_" + std::string(label);
-        
         if (ImGui::IsWindowAppearing()) {
             input_buffer = val_to_db_str(*value);
-            if (!input_buffer.empty() && input_buffer[0] == '+') {
-                input_buffer = input_buffer.substr(1);
-            }
+            if (!input_buffer.empty() && input_buffer[0] == '+') input_buffer = input_buffer.substr(1);
         }
         
-        ImGui::SetKeyboardFocusHere();
-        if (ImGui::InputText(input_id.c_str(), &input_buffer, ImGuiInputTextFlags_EnterReturnsTrue)) {
-            int new_val = db_str_to_val(input_buffer);
-            if (new_val >= min_v && new_val <= max_v) {
-                *value = new_val;
-                if (alsa) {
-                    alsa->set_matrix_gain("output-volume", 0, ch_idx, *value);
-                    last_write_time = std::chrono::steady_clock::now();
-                    std::cout << "Write Master [" << ch_idx+1 << "] from input: " << *value << std::endl;
-                    
-                    if (ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
-                        int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
-                        if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
-                            master_states[pair_idx].value = *value;
-                            alsa->set_matrix_gain("output-volume", 0, pair_idx, *value);
-                            std::cout << "Write Master [" << pair_idx+1 << "] from input (linked): " << *value << std::endl;
-                        }
-                    }
-                }
-            }
+        ImGui::SetNextItemWidth(120);
+        if (ImGui::InputText("##db_input_master", &input_buffer, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            *value = db_str_to_val(input_buffer);
+            fader_changed = true;
+            force_write = true;
             ImGui::CloseCurrentPopup();
         }
+        ImGui::SameLine(); ImGui::Text("dB");
         
-        ImGui::TextDisabled("Range: -inf to +6.00 dB");
+        ImGui::Spacing();
+        ImGui::TextDisabled("Presets:");
+        
+        float presets[] = {6.0f, 0.0f, -5.0f, -10.0f, -15.0f, -20.0f, -30.0f, -40.0f, -50.0f};
+        for (int i = 0; i < 9; i++) {
+            char b_lab[16];
+            snprintf(b_lab, sizeof(b_lab), "%+.1f", presets[i]);
+            if (ImGui::Button(b_lab, ImVec2(50, 0))) {
+                *value = db_str_to_val(std::string(b_lab));
+                fader_changed = true;
+                force_write = true;
+                ImGui::CloseCurrentPopup();
+            }
+            if ((i + 1) % 3 != 0) ImGui::SameLine();
+        }
+        
+        if (ImGui::Button("-inf (Mute)", ImVec2(160, 0))) {
+            *value = 0;
+            fader_changed = true;
+            force_write = true;
+            ImGui::CloseCurrentPopup();
+        }
         
         ImGui::EndPopup();
     }
     
-    std::string db_str = val_to_db_str(*value);
+    // Real-time Update (Throttled by ShouldWrite, unless force_write is true)
+    if (alsa && (fader_changed || ImGui::IsItemDeactivatedAfterEdit())) {
+        ImGuiID widget_id = ImGui::GetID(id.c_str());
+        if (force_write || ShouldWrite(widget_id)) {
+            auto now = std::chrono::steady_clock::now();
+            
+            // Link handling
+            if (ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
+                int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
+                if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
+                    master_states[pair_idx].value = *value;
+                    master_last_write_time[pair_idx] = now;
+                }
+            }
+
+            // ATOMIC WRITE: Send all 18 channels to ALSA
+            std::vector<long> all_v(18);
+            for(int i=0; i<18; ++i) all_v[i] = master_states[i].value;
+            
+            if (alsa->set_control_value("output-volume", 0, all_v)) {
+                last_write_time = now;
+                master_last_write_time[ch_idx] = now;
+                last_widget_write_time[widget_id] = now;
+            }
+        }
+    }
+    
     float db_width = ImGui::CalcTextSize(db_str.c_str()).x;
     ImGui::SetCursorScreenPos(ImVec2(current_x + (group_w - db_width)/2.0f, ImGui::GetCursorScreenPos().y));
     ImGui::TextColored(ImVec4(0,1,0,1), "%s", db_str.c_str());
