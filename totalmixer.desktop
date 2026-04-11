@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=TotalMixer
+GenericName=Fireface Audio Mixer
+Comment=GUI mixer control for RME Fireface audio interfaces
+Exec=totalmixer_gui
+Icon=totalmixer
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;

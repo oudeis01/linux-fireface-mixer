@@ -28,6 +28,8 @@ endif()
 include(FetchContent)
 
 # 1. GLFW
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
     glfw
     GIT_REPOSITORY https://github.com/glfw/glfw.git
@@ -94,3 +96,29 @@ add_executable(totalmixer_gui
 )
 target_include_directories(totalmixer_gui PRIVATE src)
 target_link_libraries(totalmixer_gui PRIVATE imgui ${ALSA_LIBRARIES} ${SYSTEMD_LIBRARIES} glfw)
+
+# Install Targets
+install(TARGETS totalmixer_cli totalmixer_gui
+    RUNTIME DESTINATION bin
+)
+
+# Install Desktop Entry and Icon
+install(FILES totalmixer.desktop
+    DESTINATION share/applications
+)
+install(FILES icon.png
+    DESTINATION share/icons/hicolor/512x512/apps
+    RENAME totalmixer.png
+)
+
+# Uninstall Target
+if(NOT TARGET uninstall)
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake_uninstall.cmake.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
+        IMMEDIATE @ONLY
+    )
+    add_custom_target(uninstall
+        COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake
+    )
+endif()
