@@ -73,6 +73,9 @@ bool TotalMixerGUI::SquareSlider(const char* label, long* value, int min_v, int 
 
         *value = (long)v_float;
         value_changed = true;
+        
+        // Consume the wheel event so Table scroll doesn't also process it
+        g.IO.MouseWheel = 0.0f;
     }
 
     if (g.ActiveId == id) {
@@ -584,12 +587,10 @@ void TotalMixerGUI::DrawControlTab() {
 }
 
 void TotalMixerGUI::DrawMatrixTab(const char* title, bool is_playback) {
-    ImGui::BeginChild(title, ImVec2(0, 0), true);
+    ImGui::BeginChild(title, ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
     
     ImGuiTableFlags flags = ImGuiTableFlags_SizingFixedFit | 
-                            ImGuiTableFlags_Borders | 
-                            ImGuiTableFlags_ScrollX | 
-                            ImGuiTableFlags_ScrollY;
+                            ImGuiTableFlags_Borders;
     
     if (ImGui::BeginTable("MatrixTable", 19, flags)) {
         ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 60.0f);
@@ -691,7 +692,15 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
     bool fader_changed = false;
     bool force_write = false;
     
-    // Mouse Wheel Support for Master Fader
+    if (ImGui::VSliderFloat(id.c_str(), ImVec2(fader_w, 140), &v_float, (float)min_v, (float)max_v, "")) {
+        *value = (long)v_float;
+        // Mute Snap
+        if (v_float < ((float)(max_v - min_v) / 200.0f)) *value = 0;
+        
+        fader_changed = true;
+    }
+
+    // Mouse Wheel Support for Master Fader (must be AFTER VSliderFloat so IsItemHovered checks the slider)
     if (ImGui::IsItemHovered() && ImGui::GetIO().MouseWheel != 0.0f) {
         float wheel_delta = ImGui::GetIO().MouseWheel;
         float range = (float)(max_v - min_v);
@@ -705,14 +714,9 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
         
         *value = (long)v_float;
         fader_changed = true;
-    }
-
-    if (ImGui::VSliderFloat(id.c_str(), ImVec2(fader_w, 140), &v_float, (float)min_v, (float)max_v, "")) {
-        *value = (long)v_float;
-        // Mute Snap
-        if (v_float < ((float)(max_v - min_v) / 200.0f)) *value = 0;
         
-        fader_changed = true;
+        // Claim ownership to prevent parent scroll from consuming the event
+        ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
     }
 
     // Link handling
