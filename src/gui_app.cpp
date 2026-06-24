@@ -779,49 +779,7 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
         ImGui::EndPopup();
     }
     
-    // Real-time Update (Throttled by ShouldWrite, unless force_write is true)
-    if (alsa && (fader_changed || ImGui::IsItemDeactivatedAfterEdit())) {
-        ImGuiID widget_id = ImGui::GetID(id.c_str());
-        if (force_write || ShouldWrite(widget_id)) {
-            auto now = std::chrono::steady_clock::now();
-            
-            // Link handling
-            if (ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
-                int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
-                if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
-                    master_states[pair_idx].value = *value;
-                    master_last_write_time[pair_idx] = now;
-                }
-            }
-
-            // ATOMIC WRITE: Send all 18 channels to ALSA
-            std::vector<long> all_v(18);
-            // Check if any channel has solo active
-            bool any_solo = false;
-            for(int i=0; i<18; ++i) {
-                if(master_states[i].is_soloed) { any_solo = true; break; }
-            }
-            for(int i=0; i<18; ++i) {
-                if(any_solo && !master_states[i].is_soloed) {
-                    all_v[i] = 0;  // Non-soloed channels get 0 (muted)
-                } else {
-                    all_v[i] = master_states[i].value;
-                }
-            }
-            
-            if (alsa->set_control_value("output-volume", 0, all_v)) {
-                last_write_time = now;
-                master_last_write_time[ch_idx] = now;
-                last_widget_write_time[widget_id] = now;
-            }
-        }
-    }
-    
-    float db_width = ImGui::CalcTextSize(db_str.c_str()).x;
-    ImGui::SetCursorScreenPos(ImVec2(current_x + (group_w - db_width)/2.0f, ImGui::GetCursorScreenPos().y));
-    ImGui::TextColored(ImVec4(0,1,0,1), "%s", db_str.c_str());
-    
-    // Mute and Solo buttons
+    // Mute and Solo buttons (placed BEFORE write-back so they trigger ALSA write)
     if (ch_idx < (int)master_states.size()) {
         float ms_button_w = 24.0f;
         float total_ms_w = ms_button_w * 2.0f + 7.0f;
@@ -882,6 +840,48 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
             }
         }
     }
+    
+    // Real-time Update (Throttled by ShouldWrite, unless force_write is true)
+    if (alsa && (fader_changed || ImGui::IsItemDeactivatedAfterEdit())) {
+        ImGuiID widget_id = ImGui::GetID(id.c_str());
+        if (force_write || ShouldWrite(widget_id)) {
+            auto now = std::chrono::steady_clock::now();
+            
+            // Link handling
+            if (ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
+                int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
+                if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
+                    master_states[pair_idx].value = *value;
+                    master_last_write_time[pair_idx] = now;
+                }
+            }
+
+            // ATOMIC WRITE: Send all 18 channels to ALSA
+            std::vector<long> all_v(18);
+            // Check if any channel has solo active
+            bool any_solo = false;
+            for(int i=0; i<18; ++i) {
+                if(master_states[i].is_soloed) { any_solo = true; break; }
+            }
+            for(int i=0; i<18; ++i) {
+                if(any_solo && !master_states[i].is_soloed) {
+                    all_v[i] = 0;  // Non-soloed channels get 0 (muted)
+                } else {
+                    all_v[i] = master_states[i].value;
+                }
+            }
+            
+            if (alsa->set_control_value("output-volume", 0, all_v)) {
+                last_write_time = now;
+                master_last_write_time[ch_idx] = now;
+                last_widget_write_time[widget_id] = now;
+            }
+        }
+    }
+    
+    float db_width = ImGui::CalcTextSize(db_str.c_str()).x;
+    ImGui::SetCursorScreenPos(ImVec2(current_x + (group_w - db_width)/2.0f, ImGui::GetCursorScreenPos().y));
+    ImGui::TextColored(ImVec4(0,1,0,1), "%s", db_str.c_str());
     
     if (ch_idx < (int)master_states.size()) {
         bool is_linked = master_states[ch_idx].is_linked;
