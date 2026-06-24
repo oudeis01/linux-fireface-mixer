@@ -33,6 +33,21 @@ struct Device_Info {
     std::string bus_speed;
 };
 
+// ── Meter Data Structures ──
+struct MeterLevel {
+    float normalized = 0.0f;       // Current level normalized to [0.0, 1.0]
+    float peak_norm = 0.0f;        // Peak normalized value (for hold)
+    float peak_hold_time = 0.0f;   // Seconds since peak detected
+    bool is_overload = false;      // OVR flag
+    int overload_count = 0;        // Consecutive overload samples
+};
+
+struct MeterPreferences {
+    int ovr_sample_count = 3;       // Consecutive overload samples for OVR (1-10)
+    float peak_hold_seconds = 1.5f; // Peak hold duration (0.1-9.9s)
+    bool rms_plus_3db = false;      // RMS +3dB correction checkbox
+};
+
 class TotalMixerGUI {
 public:
     TotalMixerGUI();
@@ -65,10 +80,19 @@ private:
     void DrawFader(const char* label, long* value, int min_v, int max_v, int ch_idx);
     bool SquareSlider(const char* label, long* value, int min_v, int max_v, const ImVec2& size);
 
+    // Meter Methods
+    void PollMeters();
+    void DrawMeterBar(const char* label, const MeterLevel& meter, const ImVec2& size);
+
     // Data / State
     std::vector<std::string> out_labels;
     std::vector<std::string> in_labels;
     Device_Info device_info;
+
+    // Meter State
+    std::vector<MeterLevel> master_meters;   // 18 channels, indexed by master ch_idx
+    MeterPreferences meter_prefs;
+    std::chrono::steady_clock::time_point last_meter_poll_time;
 
     // Cache State
     // Matrix: map (out_idx, in_idx) -> value

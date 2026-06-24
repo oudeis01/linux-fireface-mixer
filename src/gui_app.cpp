@@ -179,6 +179,75 @@ bool TotalMixerGUI::SquareSlider(const char* label, long* value, int min_v, int 
     return value_changed;
 }
 
+// ── Meter Helper Functions ──
+static ImVec4 GetMeterColor(float normalized_db) {
+    if (normalized_db < 0.2f) {
+        float t = normalized_db / 0.2f;
+        return ImVec4(0.0f, 0.5f + 0.3f * t, 0.0f, 1.0f);
+    } else if (normalized_db < 0.6f) {
+        float t = (normalized_db - 0.2f) / 0.4f;
+        return ImVec4(t, 0.8f, 0.0f, 1.0f);
+    } else if (normalized_db < 0.85f) {
+        float t = (normalized_db - 0.6f) / 0.25f;
+        return ImVec4(1.0f, 0.8f - 0.3f * t, 0.0f, 1.0f);
+    } else {
+        float t = (normalized_db - 0.85f) / 0.15f;
+        return ImVec4(1.0f, 0.1f, 0.1f * t, 1.0f);
+    }
+}
+
+// ── DrawMeterBar: Custom vertical meter bar using ImGui DrawList API ──
+void TotalMixerGUI::DrawMeterBar(const char* label, const MeterLevel& meter, const ImVec2& size) {
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems) return;
+
+    const ImRect frame_bb(window->DC.CursorPos, window->DC.CursorPos + size);
+    ImGui::ItemSize(frame_bb.GetSize());
+    if (!ImGui::ItemAdd(frame_bb, window->GetID(label))) return;
+
+    // Background (dark well)
+    window->DrawList->AddRectFilled(frame_bb.Min, frame_bb.Max, IM_COL32(15, 15, 15, 255));
+
+    // Fill bar from bottom up to current normalized level
+    if (meter.normalized > 0.0f) {
+        float fill_height = meter.normalized * size.y;
+        ImVec2 fill_min(frame_bb.Min.x, frame_bb.Max.y - fill_height);
+        ImVec2 fill_max = frame_bb.Max;
+
+        ImU32 fill_col = ImGui::ColorConvertFloat4ToU32(GetMeterColor(meter.normalized));
+        window->DrawList->AddRectFilled(fill_min, fill_max, fill_col);
+    }
+
+    // Peak hold line (thin white line)
+    if (meter.peak_norm > 0.0f && meter.peak_norm > meter.normalized) {
+        float peak_y = frame_bb.Max.y - meter.peak_norm * size.y;
+        window->DrawList->AddLine(
+            ImVec2(frame_bb.Min.x, peak_y),
+            ImVec2(frame_bb.Max.x, peak_y),
+            IM_COL32(255, 255, 255, 220),
+            2.0f
+        );
+    }
+
+    // Border
+    window->DrawList->AddRect(frame_bb.Min, frame_bb.Max, IM_COL32(60, 60, 60, 255));
+
+    // Overload indicator (red "OVR" text with dark background for legibility)
+    if (meter.is_overload) {
+        const char* ovr_text = "OVR";
+        ImVec2 text_sz = ImGui::CalcTextSize(ovr_text);
+        float text_x = frame_bb.Min.x + (size.x - text_sz.x) * 0.5f;
+        float text_y = frame_bb.Min.y + 2.0f;
+        float pad = 2.0f;
+        ImRect bg_bb(
+            ImVec2(text_x - pad, text_y),
+            ImVec2(text_x + text_sz.x + pad, text_y + text_sz.y)
+        );
+        window->DrawList->AddRectFilled(bg_bb.Min, bg_bb.Max, IM_COL32(0, 0, 0, 200));
+        window->DrawList->AddText(ImVec2(text_x, text_y), IM_COL32(255, 50, 50, 255), ovr_text);
+    }
+}
+
 TotalMixerGUI::TotalMixerGUI()
     : connection_status(ConnectionStatus::HardwareNotFound),
       service_status(ServiceStatus::NotRunning),
@@ -198,6 +267,8 @@ TotalMixerGUI::TotalMixerGUI()
 
     master_states.resize(18);
     master_last_write_time.resize(18, std::chrono::steady_clock::now() - std::chrono::seconds(10));
+    master_meters.resize(18);
+    last_meter_poll_time = std::chrono::steady_clock::now();
 
     // Check service status first
     CheckServiceStatus();
@@ -287,6 +358,95 @@ void TotalMixerGUI::PollInputMatrix() {
     } catch (...) {}
 }
 
+void TotalMixerGUI::PollMeters() {
+    if (!alsa) return;
+    try {
+        // ── Cache raw value ranges for each meter control (query once from ALSA) ──
+        static long ao_min = 0, ao_range = 1;
+        static long so_min = 0, so_range = 1;
+        static long ad_min = 0, ad_range = 1;
+        static bool range_initialized = false;
+        if (!range_initialized) {
+            // Enable hardware metering (one-shot, required for meter:* to report PCM levels)
+            if (alsa->set_control_value("metering", 0, 1)) {
+                std::cout << "[METER] Hardware metering enabled" << std::endl;
+            } else {
+                std::cerr << "[METER] Warning: failed to enable metering" << std::endl;
+            }
+
+            auto init_range = [this](const std::string& name, long& out_min, long& out_range) {
+                auto info = alsa->get_control_info(name, 0);
+                if (info) {
+                    out_min = info->min;
+                    out_range = info->max - info->min;
+                    if (out_range <= 0) out_range = 1;
+                    std::cout << "[METER] " << name << " raw range: "
+                              << info->min << " .. " << info->max << std::endl;
+                }
+            };
+            init_range("meter:analog-output", ao_min, ao_range);
+            init_range("meter:spdif-output", so_min, so_range);
+            init_range("meter:adat-output", ad_min, ad_range);
+            range_initialized = true;
+        }
+
+        // Compute delta time for peak hold decay
+        auto now = std::chrono::steady_clock::now();
+        float dt = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_meter_poll_time).count() / 1000.0f;
+        if (dt < 0.001f) dt = 0.1f;
+
+        // Helper: read one meter control, normalize all elements, update master_meters
+        auto read_meter = [&, this](const std::string& name, long raw_min, long raw_range,
+                              int start_idx, int count) {
+            auto val = alsa->get_control_value(name, 0);
+            if (!val || (int)val->int_values.size() < count) return;
+
+            for (int i = 0; i < count; ++i) {
+                int idx = start_idx + i;
+                if (idx < 0 || idx >= (int)master_meters.size()) break;
+
+                // Normalize raw value to [0, 1] linear
+                float norm = (val->int_values[i] - raw_min) / (float)raw_range;
+                norm = ImClamp(norm, 0.0f, 1.0f);
+
+                // Convert linear to dBFS display scale: -60 dBFS = 0%, 0 dBFS = 100%
+                static const float kMeterRangeDB = 60.0f;
+                float display_norm = 0.0f;
+                if (norm > 1e-10f) {
+                    float db = 20.0f * log10f(norm);
+                    display_norm = ImClamp((db + kMeterRangeDB) / kMeterRangeDB, 0.0f, 1.0f);
+                }
+
+                MeterLevel& m = master_meters[idx];
+                // Peak hold
+                if (display_norm >= m.peak_norm) {
+                    m.peak_norm = display_norm;
+                    m.peak_hold_time = 0.0f;
+                } else {
+                    m.peak_hold_time += dt;
+                    if (m.peak_hold_time >= meter_prefs.peak_hold_seconds) {
+                        m.peak_norm = display_norm;
+                    }
+                }
+                // Overload detection: -6 dBFS threshold (= 0.9 in dBFS display)
+                if (display_norm >= 0.9f) {
+                    m.overload_count++;
+                    m.is_overload = (m.overload_count >= meter_prefs.ovr_sample_count);
+                } else {
+                    m.overload_count = 0;
+                    m.is_overload = false;
+                }
+                m.normalized = display_norm;
+            }
+        };
+
+        // Master section: ch 0-7 = analog-out, 8-9 = spdif-out, 10-17 = adat-out
+        read_meter("meter:analog-output", ao_min, ao_range, 0, 8);
+        read_meter("meter:spdif-output",   so_min, so_range, 8, 2);
+        read_meter("meter:adat-output",    ad_min, ad_range, 10, 8);
+    } catch (...) {}
+}
+
 void TotalMixerGUI::PollPlaybackMatrix() {
     try {
         for (int o = 0; o < 18; ++o) {
@@ -325,6 +485,13 @@ void TotalMixerGUI::Render() {
                   << " since_write:" << since_write << "ms" << std::endl;
     }
 
+    // Meter polling at ~33ms interval (≈30Hz, every ~2 frames at 60fps)
+    auto meter_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_meter_poll_time).count();
+    if (meter_elapsed > 33) {
+        PollMeters();
+        last_meter_poll_time = now;
+    }
+
     ImGuiIO& io = ImGui::GetIO();
     float scale = io.DisplaySize.x / 1600.0f; // Adjusted reference width for 18 channels
     if (scale < 0.5f) scale = 0.5f; if (scale > 2.0f) scale = 2.0f;
@@ -340,7 +507,7 @@ void TotalMixerGUI::Render() {
         ImGui::BeginDisabled();
     }
     
-    float master_h = 240.0f * scale;
+    float master_h = 360.0f * scale;
     float tab_h = ImGui::GetContentRegionAvail().y - master_h;
     if (tab_h < 100.0f) tab_h = 100.0f;
 
@@ -585,6 +752,42 @@ void TotalMixerGUI::DrawControlTab() {
         ImGui::NextColumn();
     }
     ImGui::Columns(1);
+    
+    // ── Meter Preferences Section ──
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.6f, 1.0f, 0.6f, 1.0f), "[ Meter Settings ]");
+    ImGui::Separator();
+    
+    ImGui::Spacing();
+    
+    ImGui::Text("OVR Sample Count:"); ImGui::SameLine(200);
+    ImGui::SetNextItemWidth(100);
+    if (ImGui::SliderInt("##ovr_cnt", &meter_prefs.ovr_sample_count, 1, 10)) {
+        // Clamp happens automatically via SliderInt range
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Consecutive overload samples to trigger OVR indicator");
+    }
+    
+    ImGui::Text("Peak Hold Time:"); ImGui::SameLine(200);
+    ImGui::SetNextItemWidth(100);
+    if (ImGui::SliderFloat("##peak_hold", &meter_prefs.peak_hold_seconds, 0.1f, 9.9f, "%.1fs")) {
+        if (meter_prefs.peak_hold_seconds < 0.1f) meter_prefs.peak_hold_seconds = 0.1f;
+        if (meter_prefs.peak_hold_seconds > 9.9f) meter_prefs.peak_hold_seconds = 9.9f;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Duration the peak indicator stays visible after signal drops");
+    }
+    
+    ImGui::Text("RMS +3dB Correction:"); ImGui::SameLine(200);
+    ImGui::Checkbox("##rms_corr", &meter_prefs.rms_plus_3db);
+    ImGui::SameLine();
+    ImGui::TextDisabled("?");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Shift RMS display +3dB for 0dBFS alignment with peak meter");
+    }
+    
     ImGui::EndChild();
 }
 
@@ -676,8 +879,10 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
     
     std::string db_str = val_to_db_str(*value);
     float fader_w = 40.0f;
-    float group_w = 70.0f; 
-    float offset = (group_w - fader_w) / 2.0f;
+    float meter_w = 13.0f;        // ~1/3 of fader width
+    float gap = 2.0f;
+    float group_w = fader_w + gap + meter_w + 24.0f; // ~79 — side padding included
+    float offset = 12.0f;
     ImGui::Dummy(ImVec2(group_w, 0));
     
     float label_width = ImGui::CalcTextSize(label).x;
@@ -694,12 +899,19 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
     bool fader_changed = false;
     bool force_write = false;
     
+    // ── Fader + Meter side-by-side in same row, same height ──
     if (ImGui::VSliderFloat(id.c_str(), ImVec2(fader_w, 140), &v_float, (float)min_v, (float)max_v, "")) {
         *value = (long)v_float;
         // Mute Snap
         if (v_float < ((float)(max_v - min_v) / 200.0f)) *value = 0;
         
         fader_changed = true;
+    }
+
+    // Meter bar alongside the fader
+    ImGui::SameLine(0, gap);
+    if (ch_idx >= 0 && ch_idx < (int)master_meters.size()) {
+        DrawMeterBar("##mtr", master_meters[ch_idx], ImVec2(meter_w, 140));
     }
 
     // Mouse Wheel Support for Master Fader (must be AFTER VSliderFloat so IsItemHovered checks the slider)
@@ -916,7 +1128,7 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
             ImGui::SetTooltip("%s", tooltip.c_str());
         }
     }
-    
+
     ImGui::EndGroup();
 }
 
