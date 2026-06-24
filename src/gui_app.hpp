@@ -21,6 +21,9 @@ enum class ConnectionStatus {
 struct ChannelState {
     long value = 0;
     bool is_linked = false;
+    bool is_muted = false;
+    bool is_soloed = false;
+    long saved_value = 0;
 };
 
 struct Device_Info {

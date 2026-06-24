@@ -250,6 +250,8 @@ void TotalMixerGUI::PollMasterVolumes() {
         if (mv) {
             auto now = std::chrono::steady_clock::now();
             for (size_t i = 0; i < mv->size() && i < 18; ++i) {
+                // Skip if muted or soloed (user control in progress)
+                if(master_states[i].is_muted || master_states[i].is_soloed) continue;
                 // Skip updating if this specific fader was written to in the last 2000ms
                 auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - master_last_write_time[i]).count();
                 if (elapsed < 2000) continue; 
@@ -794,7 +796,18 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
 
             // ATOMIC WRITE: Send all 18 channels to ALSA
             std::vector<long> all_v(18);
-            for(int i=0; i<18; ++i) all_v[i] = master_states[i].value;
+            // Check if any channel has solo active
+            bool any_solo = false;
+            for(int i=0; i<18; ++i) {
+                if(master_states[i].is_soloed) { any_solo = true; break; }
+            }
+            for(int i=0; i<18; ++i) {
+                if(any_solo && !master_states[i].is_soloed) {
+                    all_v[i] = 0;  // Non-soloed channels get 0 (muted)
+                } else {
+                    all_v[i] = master_states[i].value;
+                }
+            }
             
             if (alsa->set_control_value("output-volume", 0, all_v)) {
                 last_write_time = now;
@@ -807,6 +820,68 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
     float db_width = ImGui::CalcTextSize(db_str.c_str()).x;
     ImGui::SetCursorScreenPos(ImVec2(current_x + (group_w - db_width)/2.0f, ImGui::GetCursorScreenPos().y));
     ImGui::TextColored(ImVec4(0,1,0,1), "%s", db_str.c_str());
+    
+    // Mute and Solo buttons
+    if (ch_idx < (int)master_states.size()) {
+        float ms_button_w = 24.0f;
+        float total_ms_w = ms_button_w * 2.0f + 7.0f;
+        ImGui::SetCursorScreenPos(ImVec2(current_x + (group_w - total_ms_w) / 2.0f, ImGui::GetCursorScreenPos().y));
+        
+        // Mute button
+        {
+            bool is_muted = master_states[ch_idx].is_muted;
+            ImVec4 m_color = is_muted ? ImVec4(0.8f, 0.2f, 0.2f, 1.0f) : ImVec4(0.4f, 0.4f, 0.4f, 0.6f);
+            ImGui::PushStyleColor(ImGuiCol_Button, m_color);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(m_color.x * 1.2f, m_color.y * 1.2f, m_color.z * 1.2f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(m_color.x * 1.4f, m_color.y * 1.4f, m_color.z * 1.4f, 1.0f));
+            
+            std::string mute_id = "M##mute_" + std::to_string(ch_idx);
+            if (ImGui::Button(mute_id.c_str(), ImVec2(ms_button_w, 20))) {
+                if (!is_muted) {
+                    master_states[ch_idx].is_muted = true;
+                    master_states[ch_idx].saved_value = *value;
+                    *value = 0;
+                    fader_changed = true;
+                    force_write = true;
+                } else {
+                    master_states[ch_idx].is_muted = false;
+                    *value = master_states[ch_idx].saved_value;
+                    if (*value > max_v) *value = max_v;
+                    if (*value < min_v) *value = min_v;
+                    fader_changed = true;
+                    force_write = true;
+                }
+            }
+            ImGui::PopStyleColor(3);
+            
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Mute %s", label);
+            }
+        }
+        
+        ImGui::SameLine();
+        
+        // Solo button
+        {
+            bool is_soloed = master_states[ch_idx].is_soloed;
+            ImVec4 s_color = is_soloed ? ImVec4(0.8f, 0.8f, 0.2f, 1.0f) : ImVec4(0.4f, 0.4f, 0.4f, 0.6f);
+            ImGui::PushStyleColor(ImGuiCol_Button, s_color);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(s_color.x * 1.2f, s_color.y * 1.2f, s_color.z * 1.2f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(s_color.x * 1.4f, s_color.y * 1.4f, s_color.z * 1.4f, 1.0f));
+            
+            std::string solo_id = "S##solo_" + std::to_string(ch_idx);
+            if (ImGui::Button(solo_id.c_str(), ImVec2(ms_button_w, 20))) {
+                master_states[ch_idx].is_soloed = !is_soloed;
+                fader_changed = true;
+                force_write = true;
+            }
+            ImGui::PopStyleColor(3);
+            
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Solo %s", label);
+            }
+        }
+    }
     
     if (ch_idx < (int)master_states.size()) {
         bool is_linked = master_states[ch_idx].is_linked;
