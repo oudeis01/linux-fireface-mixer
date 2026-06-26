@@ -10,6 +10,7 @@
 
 #include "gui_app.hpp"
 #include <iostream>
+#include <fstream>
 
 static void glfw_error_callback(int error, const char* description) {
     fprintf(stderr, "GLFW Error %d: %s\n", error, description);
@@ -39,6 +40,35 @@ int main(int, char**) {
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+    // Rasterize the font once at high resolution (kBaseFontPx). At runtime gui_app only
+    // scales DOWN from this atlas, so text stays crisp at any window size (no upscaling blur).
+    // Prefer a system TTF; fall back to the built-in bitmap font if none is found.
+    {
+        const char* font_candidates[] = {
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+        };
+        ImFont* loaded = nullptr;
+        for (const char* path : font_candidates) {
+            if (std::ifstream(path).good()) {
+                loaded = io.Fonts->AddFontFromFileTTF(path, TotalMixer::kBaseFontPx);
+                if (loaded) {
+                    std::cout << "Font: loaded " << path << " @ " << TotalMixer::kBaseFontPx << "px" << std::endl;
+                    break;
+                }
+            }
+        }
+        if (!loaded) {
+            ImFontConfig cfg;
+            cfg.SizePixels = TotalMixer::kBaseFontPx;
+            io.Fonts->AddFontDefault(&cfg);
+            std::cout << "Font: no system TTF found, using built-in font @ "
+                      << TotalMixer::kBaseFontPx << "px" << std::endl;
+        }
+    }
 
     ImGui::StyleColorsDark();
 

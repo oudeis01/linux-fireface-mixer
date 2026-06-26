@@ -91,6 +91,7 @@ target_link_libraries(totalmixer_cli ${ALSA_LIBRARIES})
 add_executable(totalmixer_gui
     src/gui_main.cpp
     src/gui_app.cpp
+    src/config_manager.cpp
     src/service_checker.cpp
     src/alsa_core.cpp
 )
