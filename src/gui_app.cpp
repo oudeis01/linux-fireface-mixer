@@ -10,8 +10,32 @@
 #include <cmath>
 #include <cstdio>
 #include <vector>
+#include <ifaddrs.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <net/if.h>
 
 namespace TotalMixer {
+
+// Enumerate non-loopback IPv4 addresses so the Web Remote section can show the
+// exact URLs a phone on the LAN should open. Best-effort: returns empty on error.
+static std::vector<std::string> GetLocalIPv4Addresses() {
+    std::vector<std::string> result;
+    struct ifaddrs* ifaddr = nullptr;
+    if (getifaddrs(&ifaddr) == -1) return result;
+    for (struct ifaddrs* ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == nullptr) continue;
+        if (ifa->ifa_addr->sa_family != AF_INET) continue;
+        if (ifa->ifa_flags & IFF_LOOPBACK) continue;
+        char host[INET_ADDRSTRLEN];
+        auto* sa = reinterpret_cast<struct sockaddr_in*>(ifa->ifa_addr);
+        if (inet_ntop(AF_INET, &sa->sin_addr, host, sizeof(host))) {
+            result.emplace_back(host);
+        }
+    }
+    freeifaddrs(ifaddr);
+    return result;
+}
 
 bool TotalMixerGUI::ShouldWrite(ImGuiID id) {
     auto now = std::chrono::steady_clock::now();
@@ -1166,6 +1190,47 @@ void TotalMixerGUI::DrawControlTab() {
         ImGui::TextDisabled("Binds all interfaces (0.0.0.0). Unauthenticated UDP - use on a trusted LAN only.");
 
         if (dirty) ConfigManager::Save(meter_prefs, osc_prefs);
+    }
+
+    // ── Web Remote Section ──
+    ImGui::Spacing();
+    if (ImGui::CollapsingHeader("[ Web Remote ]")) {
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::TextWrapped("A companion phone web remote (PWA) is available as a "
+                           "separate app. It serves a lightweight mixer UI and bridges "
+                           "it to this app's OSC endpoint, so you can control the mixer "
+                           "from a phone on the same network.");
+        ImGui::Spacing();
+
+        ImGui::Text("Repo:"); ImGui::SameLine();
+        ImGui::TextDisabled("github.com/oudeis01/linux-totalmix-web-remote");
+        ImGui::Spacing();
+
+        ImGui::TextWrapped("1. Enable the OSC server above.");
+        ImGui::TextWrapped("2. Run the bridge on this PC:");
+        ImGui::Indent();
+        ImGui::TextDisabled("linux-totalmix-web-remote --allow-external");
+        ImGui::Unindent();
+        ImGui::TextWrapped("3. On a phone on the same LAN, open:");
+
+        static std::vector<std::string> lan_ips = GetLocalIPv4Addresses();
+        ImGui::Indent();
+        if (lan_ips.empty()) {
+            ImGui::BulletText("http://<this-pc-ip>:8451");
+        } else {
+            for (const auto& ip : lan_ips) {
+                ImGui::BulletText("http://%s:8451", ip.c_str());
+            }
+        }
+        ImGui::Unindent();
+        if (ImGui::SmallButton("Refresh addresses")) {
+            lan_ips = GetLocalIPv4Addresses();
+        }
+
+        ImGui::Spacing();
+        ImGui::TextDisabled("Default web port 8451. The bridge relays to the OSC ports above.");
     }
 
     ImGui::EndChild();
