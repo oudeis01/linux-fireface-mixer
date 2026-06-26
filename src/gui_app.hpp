@@ -8,6 +8,7 @@
 #include "imgui.h" // Needed for ImVec2, ImGuiID
 #include "alsa_core.hpp"
 #include "service_checker.hpp"
+#include "osc_server.hpp"
 
 namespace TotalMixer {
 
@@ -56,6 +57,13 @@ struct MeterPreferences {
     float rms_tau_seconds = 0.3f;   // RMS integration time (0.05-1.0s)
 };
 
+// OSC remote endpoint settings (persisted in preferences.json under "osc").
+struct OscPreferences {
+    bool enabled = false;   // Start the OSC server on launch
+    int in_port = 7001;     // UDP port we listen on for control messages
+    int out_port = 9001;    // UDP port we send state feedback to (on the client host)
+};
+
 class TotalMixerGUI {
 public:
     TotalMixerGUI();
@@ -93,6 +101,16 @@ private:
     // Write a source->output crosspoint gain to ALSA (analog/spdif/adat or stream).
     bool WriteSourceGain(bool is_playback, int src_idx, int output, long val);
 
+    // ── Shared apply primitives (used by both the UI and the OSC endpoint) ──
+    // Atomic 18-channel output-volume write with solo suppression (true on success).
+    bool WriteAllMasterVolumes();
+    void SetMasterVolume(int ch, long val);
+    void SetMasterMute(int ch, bool mute);
+    void SetMasterSolo(int ch, bool solo);
+    void SetMasterLink(int ch, bool linked);
+    void SetSourceGain(bool is_playback, int src_idx, int output, long val);
+    void SetSourceMute(bool is_playback, int src_idx, int output, bool mute);
+
     // Submix selection: the output (0-17) whose mix the input/playback rows currently edit.
     int selected_output = 0;
     // Returns the stereo-linked partner of an output channel, or -1 if not linked.
@@ -110,6 +128,19 @@ private:
     // Preferences
     void DrawPreferencesDialog();
     bool show_prefs_dialog = false;
+
+    // ── OSC remote endpoint ──
+    std::unique_ptr<OscServer> osc;
+    OscPreferences osc_prefs;
+    void RestartOscServer();                       // (re)start or stop per osc_prefs.enabled
+    void ApplyOscCommand(const OscCommand& cmd);   // drained inbound command -> state change
+    void SendOscState();                           // diff-push current control state to client
+    std::chrono::steady_clock::time_point last_osc_push_time;
+    bool osc_resync = true;                        // force a full state dump on next push
+    int osc_last_sent_submix = -1;
+    std::vector<long> osc_last_out_fader, osc_last_in_fader, osc_last_pb_fader;
+    std::vector<int> osc_last_out_mute, osc_last_out_solo, osc_last_out_link,
+                     osc_last_in_mute, osc_last_pb_mute;
 
     // Data / State
     std::vector<std::string> out_labels;

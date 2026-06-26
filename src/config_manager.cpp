@@ -95,7 +95,7 @@ std::string ConfigManager::GetConfigPath() {
     return base + "/totalmix/preferences.json";
 }
 
-static bool load_impl(MeterPreferences& prefs) {
+static bool load_impl(MeterPreferences& prefs, OscPreferences& osc) {
     std::string path = ConfigManager::GetConfigPath();
     std::ifstream f(path);
     if (!f.is_open()) return false;
@@ -111,28 +111,41 @@ static bool load_impl(MeterPreferences& prefs) {
         return false;
     std::string root_body = content.substr(first_brace + 1, last_brace - first_brace - 1);
 
+    std::string v;
+
     // Get "meters" object
     std::string meters_body = json_get_object(root_body, "meters");
-    if (meters_body.empty()) return false;
+    if (!meters_body.empty()) {
+        v = json_get_value(meters_body, "ovr_sample_count");
+        if (!v.empty()) prefs.ovr_sample_count = std::stoi(v);
 
-    // Parse each field
-    std::string v;
-    v = json_get_value(meters_body, "ovr_sample_count");
-    if (!v.empty()) prefs.ovr_sample_count = std::stoi(v);
+        v = json_get_value(meters_body, "peak_hold_seconds");
+        if (!v.empty()) prefs.peak_hold_seconds = std::stof(v);
 
-    v = json_get_value(meters_body, "peak_hold_seconds");
-    if (!v.empty()) prefs.peak_hold_seconds = std::stof(v);
+        v = json_get_value(meters_body, "rms_plus_3db");
+        if (!v.empty()) prefs.rms_plus_3db = parse_bool(v, prefs.rms_plus_3db);
 
-    v = json_get_value(meters_body, "rms_plus_3db");
-    if (!v.empty()) prefs.rms_plus_3db = parse_bool(v, prefs.rms_plus_3db);
+        v = json_get_value(meters_body, "rms_tau_seconds");
+        if (!v.empty()) prefs.rms_tau_seconds = std::stof(v);
+    }
 
-    v = json_get_value(meters_body, "rms_tau_seconds");
-    if (!v.empty()) prefs.rms_tau_seconds = std::stof(v);
+    // Get "osc" object (optional; absent in pre-OSC config files)
+    std::string osc_body = json_get_object(root_body, "osc");
+    if (!osc_body.empty()) {
+        v = json_get_value(osc_body, "enabled");
+        if (!v.empty()) osc.enabled = parse_bool(v, osc.enabled);
+
+        v = json_get_value(osc_body, "in_port");
+        if (!v.empty()) osc.in_port = std::stoi(v);
+
+        v = json_get_value(osc_body, "out_port");
+        if (!v.empty()) osc.out_port = std::stoi(v);
+    }
 
     return true;
 }
 
-static bool save_impl(const MeterPreferences& prefs) {
+static bool save_impl(const MeterPreferences& prefs, const OscPreferences& osc) {
     std::string path = ConfigManager::GetConfigPath();
     std::filesystem::create_directories(std::filesystem::path(path).parent_path());
 
@@ -145,17 +158,22 @@ static bool save_impl(const MeterPreferences& prefs) {
     f << "    \"peak_hold_seconds\": " << prefs.peak_hold_seconds << ",\n";
     f << "    \"rms_plus_3db\": " << (prefs.rms_plus_3db ? "true" : "false") << ",\n";
     f << "    \"rms_tau_seconds\": " << prefs.rms_tau_seconds << "\n";
+    f << "  },\n";
+    f << "  \"osc\": {\n";
+    f << "    \"enabled\": " << (osc.enabled ? "true" : "false") << ",\n";
+    f << "    \"in_port\": " << osc.in_port << ",\n";
+    f << "    \"out_port\": " << osc.out_port << "\n";
     f << "  }\n";
     f << "}\n";
     return true;
 }
 
-bool ConfigManager::Load(MeterPreferences& prefs) {
-    return load_impl(prefs);
+bool ConfigManager::Load(MeterPreferences& meters, OscPreferences& osc) {
+    return load_impl(meters, osc);
 }
 
-bool ConfigManager::Save(const MeterPreferences& prefs) {
-    return save_impl(prefs);
+bool ConfigManager::Save(const MeterPreferences& meters, const OscPreferences& osc) {
+    return save_impl(meters, osc);
 }
 
 } // namespace TotalMixer

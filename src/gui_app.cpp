@@ -54,6 +54,196 @@ bool TotalMixerGUI::WriteSourceGain(bool is_playback, int src_idx, int output, l
     return alsa->set_matrix_gain(mixer_name, hw_in_idx, output, val);
 }
 
+// ── Shared apply primitives ──
+// The 18-channel output-volume write with solo suppression. Both the master fader UI (DrawFader)
+// and the OSC endpoint route their writes through this so the two never diverge.
+static inline long clamp_gain(long v) { return v < 0 ? 0 : (v > 65536 ? 65536 : v); }
+
+bool TotalMixerGUI::WriteAllMasterVolumes() {
+    if (!alsa) return false;
+    std::vector<long> all_v(18);
+    bool any_solo = false;
+    for (int i = 0; i < 18; ++i) {
+        if (master_states[i].is_soloed) { any_solo = true; break; }
+    }
+    for (int i = 0; i < 18; ++i) {
+        all_v[i] = (any_solo && !master_states[i].is_soloed) ? 0 : master_states[i].value;
+    }
+    return alsa->set_control_value("output-volume", 0, all_v);
+}
+
+// The following Set* methods mirror the inline UI logic in DrawFader / DrawSourceStrip so that an
+// OSC command produces an identical hardware + state change. Keep them in sync with the UI paths.
+void TotalMixerGUI::SetMasterVolume(int ch, long val) {
+    if (ch < 0 || ch >= 18) return;
+    val = clamp_gain(val);
+    auto now = std::chrono::steady_clock::now();
+    master_states[ch].value = val;
+    master_states[ch].is_muted = false;  // an explicit level set clears mute
+    master_last_write_time[ch] = now;
+    int partner = OutputLinkPartner(ch);
+    if (partner != -1) {
+        master_states[partner].value = val;
+        master_states[partner].is_muted = false;
+        master_last_write_time[partner] = now;
+    }
+    if (WriteAllMasterVolumes()) last_write_time = now;
+}
+
+void TotalMixerGUI::SetMasterMute(int ch, bool mute) {
+    if (ch < 0 || ch >= 18) return;
+    if (master_states[ch].is_muted == mute) return;
+    int partner = OutputLinkPartner(ch);
+    auto apply = [&](int c) {
+        if (mute) {
+            master_states[c].is_muted = true;
+            master_states[c].saved_value = master_states[c].value;
+            master_states[c].value = 0;
+        } else {
+            master_states[c].is_muted = false;
+            master_states[c].value = clamp_gain(master_states[c].saved_value);
+        }
+    };
+    apply(ch);
+    if (partner != -1) apply(partner);
+    auto now = std::chrono::steady_clock::now();
+    master_last_write_time[ch] = now;
+    if (partner != -1) master_last_write_time[partner] = now;
+    if (WriteAllMasterVolumes()) last_write_time = now;
+}
+
+void TotalMixerGUI::SetMasterSolo(int ch, bool solo) {
+    if (ch < 0 || ch >= 18) return;
+    master_states[ch].is_soloed = solo;
+    int partner = OutputLinkPartner(ch);
+    if (partner != -1) master_states[partner].is_soloed = solo;
+    auto now = std::chrono::steady_clock::now();
+    master_last_write_time[ch] = now;
+    if (partner != -1) master_last_write_time[partner] = now;
+    if (WriteAllMasterVolumes()) last_write_time = now;
+}
+
+void TotalMixerGUI::SetMasterLink(int ch, bool linked) {
+    if (ch < 0 || ch >= 18) return;
+    master_states[ch].is_linked = linked;
+    int pair = (ch % 2 == 0) ? ch + 1 : ch - 1;
+    if (pair >= 0 && pair < 18) master_states[pair].is_linked = linked;
+}
+
+void TotalMixerGUI::SetSourceGain(bool is_playback, int src_idx, int output, long val) {
+    if (src_idx < 0 || src_idx >= 18 || output < 0 || output >= 18) return;
+    val = clamp_gain(val);
+    auto& cache = is_playback ? playback_matrix_cache : input_matrix_cache;
+    auto& mute_state = is_playback ? playback_mute_state : input_mute_state;
+    if (val > 0) mute_state.erase({output, src_idx});  // raising level clears mute
+    cache[{output, src_idx}] = val;
+    WriteSourceGain(is_playback, src_idx, output, val);
+    int partner = OutputLinkPartner(output);
+    if (partner != -1) {
+        cache[{partner, src_idx}] = val;
+        WriteSourceGain(is_playback, src_idx, partner, val);
+    }
+    last_write_time = std::chrono::steady_clock::now();
+}
+
+void TotalMixerGUI::SetSourceMute(bool is_playback, int src_idx, int output, bool mute) {
+    if (src_idx < 0 || src_idx >= 18 || output < 0 || output >= 18) return;
+    auto& cache = is_playback ? playback_matrix_cache : input_matrix_cache;
+    auto& mute_state = is_playback ? playback_mute_state : input_mute_state;
+    bool cur = mute_state.count({output, src_idx}) > 0;
+    if (cur == mute) return;
+    int partner = OutputLinkPartner(output);
+    if (mute) {
+        mute_state[{output, src_idx}] = cache[{output, src_idx}];
+        WriteSourceGain(is_playback, src_idx, output, 0);
+        cache[{output, src_idx}] = 0;
+        if (partner != -1) {
+            WriteSourceGain(is_playback, src_idx, partner, 0);
+            cache[{partner, src_idx}] = 0;
+        }
+    } else {
+        long saved = mute_state[{output, src_idx}];
+        mute_state.erase({output, src_idx});
+        WriteSourceGain(is_playback, src_idx, output, saved);
+        cache[{output, src_idx}] = saved;
+        if (partner != -1) {
+            WriteSourceGain(is_playback, src_idx, partner, saved);
+            cache[{partner, src_idx}] = saved;
+        }
+    }
+    last_write_time = std::chrono::steady_clock::now();
+}
+
+// ── OSC endpoint glue ──
+void TotalMixerGUI::RestartOscServer() {
+    if (!osc) osc = std::make_unique<OscServer>();
+    osc->Stop();
+    if (osc_prefs.enabled) {
+        osc->Start(osc_prefs.in_port, osc_prefs.out_port);
+    }
+    osc_resync = true;  // force a full state dump once a client appears
+}
+
+void TotalMixerGUI::ApplyOscCommand(const OscCommand& cmd) {
+    const long raw = clamp_gain((long)(cmd.value * 65536.0f + 0.5f));
+    const bool on = cmd.value > 0.5f;
+    switch (cmd.type) {
+        case OscCmdType::OutFader: SetMasterVolume(cmd.index, raw); break;
+        case OscCmdType::OutMute:  SetMasterMute(cmd.index, on); break;
+        case OscCmdType::OutSolo:  SetMasterSolo(cmd.index, on); break;
+        case OscCmdType::OutLink:  SetMasterLink(cmd.index, on); break;
+        case OscCmdType::InFader:  SetSourceGain(false, cmd.index, selected_output, raw); break;
+        case OscCmdType::InMute:   SetSourceMute(false, cmd.index, selected_output, on); break;
+        case OscCmdType::PbFader:  SetSourceGain(true, cmd.index, selected_output, raw); break;
+        case OscCmdType::PbMute:   SetSourceMute(true, cmd.index, selected_output, on); break;
+        case OscCmdType::SubmixSelect:
+            if (cmd.index >= 0 && cmd.index < 18) { selected_output = cmd.index; osc_resync = true; }
+            break;
+        case OscCmdType::QueryAll: osc_resync = true; break;
+        default: break;
+    }
+}
+
+// Diff-based feedback: send only the control values that changed since the last push (or all of
+// them on a forced resync). One path covers UI edits, hardware poll changes, and OSC-applied
+// changes uniformly. Source rows are view-coupled to the currently selected submix.
+void TotalMixerGUI::SendOscState() {
+    if (!osc || !osc->IsRunning() || !osc->HasClient()) return;
+
+    bool full = osc_resync || (selected_output != osc_last_sent_submix);
+    const float N = 65536.0f;
+    auto sendf = [&](const std::string& p, float v) { osc->SendFloat(p, v); };
+
+    if (selected_output != osc_last_sent_submix) {
+        sendf("/submix/current", (float)(selected_output + 1));
+        osc_last_sent_submix = selected_output;
+    }
+
+    for (int i = 0; i < 18; ++i) {
+        std::string n = std::to_string(i + 1);
+
+        long ov = master_states[i].value;
+        if (full || ov != osc_last_out_fader[i]) { sendf("/out/fader/" + n, ov / N); osc_last_out_fader[i] = ov; }
+        int om = master_states[i].is_muted ? 1 : 0;
+        if (full || om != osc_last_out_mute[i]) { sendf("/out/mute/" + n, (float)om); osc_last_out_mute[i] = om; }
+        int os = master_states[i].is_soloed ? 1 : 0;
+        if (full || os != osc_last_out_solo[i]) { sendf("/out/solo/" + n, (float)os); osc_last_out_solo[i] = os; }
+        int ol = master_states[i].is_linked ? 1 : 0;
+        if (full || ol != osc_last_out_link[i]) { sendf("/out/link/" + n, (float)ol); osc_last_out_link[i] = ol; }
+
+        long iv = input_matrix_cache[{selected_output, i}];
+        if (full || iv != osc_last_in_fader[i]) { sendf("/in/fader/" + n, iv / N); osc_last_in_fader[i] = iv; }
+        int im = input_mute_state.count({selected_output, i}) ? 1 : 0;
+        if (full || im != osc_last_in_mute[i]) { sendf("/in/mute/" + n, (float)im); osc_last_in_mute[i] = im; }
+
+        long pv = playback_matrix_cache[{selected_output, i}];
+        if (full || pv != osc_last_pb_fader[i]) { sendf("/pb/fader/" + n, pv / N); osc_last_pb_fader[i] = pv; }
+        int pm = playback_mute_state.count({selected_output, i}) ? 1 : 0;
+        if (full || pm != osc_last_pb_mute[i]) { sendf("/pb/mute/" + n, (float)pm); osc_last_pb_mute[i] = pm; }
+    }
+    osc_resync = false;
+}
+
 // Helper: Square Slider Implementation
 bool TotalMixerGUI::SquareSlider(const char* label, long* value, int min_v, int max_v, const ImVec2& size) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -321,7 +511,19 @@ TotalMixerGUI::TotalMixerGUI()
     last_meter_poll_time = std::chrono::steady_clock::now();
 
     // Load persisted preferences
-    ConfigManager::Load(meter_prefs);
+    ConfigManager::Load(meter_prefs, osc_prefs);
+
+    // OSC feedback diff snapshots (sentinel -1 forces a first send; resync also overrides).
+    osc_last_out_fader.assign(18, -1);
+    osc_last_in_fader.assign(18, -1);
+    osc_last_pb_fader.assign(18, -1);
+    osc_last_out_mute.assign(18, -1);
+    osc_last_out_solo.assign(18, -1);
+    osc_last_out_link.assign(18, -1);
+    osc_last_in_mute.assign(18, -1);
+    osc_last_pb_mute.assign(18, -1);
+    last_osc_push_time = std::chrono::steady_clock::now();
+    if (osc_prefs.enabled) RestartOscServer();
 
     // Check service status first
     CheckServiceStatus();
@@ -557,7 +759,13 @@ void TotalMixerGUI::Render() {
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_poll_time).count();
     auto since_write = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_write_time).count();
-    
+
+    // ── OSC inbound: apply any queued remote commands on this (GUI) thread ──
+    if (osc && osc->IsRunning()) {
+        if (osc->TakeClientChanged()) osc_resync = true;  // new controller -> full dump
+        for (const auto& cmd : osc->DrainCommands()) ApplyOscCommand(cmd);
+    }
+
     // Skip polling if:
     // 1. Any widget is currently active (being dragged)
     // 2. Less than 200ms since last write to hardware
@@ -578,6 +786,13 @@ void TotalMixerGUI::Render() {
     if (meter_elapsed > 33) {
         PollMeters();
         last_meter_poll_time = now;
+    }
+
+    // OSC outbound: diff-push control state to the client at ~20Hz.
+    auto osc_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_osc_push_time).count();
+    if (osc_elapsed > 50) {
+        SendOscState();
+        last_osc_push_time = now;
     }
 
     // F2 shortcut to toggle Preferences dialog
@@ -861,7 +1076,7 @@ void TotalMixerGUI::DrawControlTab() {
         ImGui::Text("OVR Sample Count:"); ImGui::SameLine(200);
         ImGui::SetNextItemWidth(100);
         if (ImGui::SliderInt("##ovr_cnt", &meter_prefs.ovr_sample_count, 1, 10)) {
-            ConfigManager::Save(meter_prefs);
+            ConfigManager::Save(meter_prefs, osc_prefs);
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Consecutive overload samples to trigger OVR indicator");
@@ -872,7 +1087,7 @@ void TotalMixerGUI::DrawControlTab() {
         if (ImGui::SliderFloat("##peak_hold", &meter_prefs.peak_hold_seconds, 0.1f, 9.9f, "%.1fs")) {
             if (meter_prefs.peak_hold_seconds < 0.1f) meter_prefs.peak_hold_seconds = 0.1f;
             if (meter_prefs.peak_hold_seconds > 9.9f) meter_prefs.peak_hold_seconds = 9.9f;
-            ConfigManager::Save(meter_prefs);
+            ConfigManager::Save(meter_prefs, osc_prefs);
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Duration the peak indicator stays visible after signal drops");
@@ -880,7 +1095,7 @@ void TotalMixerGUI::DrawControlTab() {
 
         ImGui::Text("RMS +3dB Correction:"); ImGui::SameLine(200);
         if (ImGui::Checkbox("##rms_corr", &meter_prefs.rms_plus_3db)) {
-            ConfigManager::Save(meter_prefs);
+            ConfigManager::Save(meter_prefs, osc_prefs);
         }
         ImGui::SameLine();
         ImGui::TextDisabled("?");
@@ -893,13 +1108,66 @@ void TotalMixerGUI::DrawControlTab() {
         if (ImGui::SliderFloat("##rms_tau", &meter_prefs.rms_tau_seconds, 0.05f, 1.0f, "%.2fs")) {
             if (meter_prefs.rms_tau_seconds < 0.05f) meter_prefs.rms_tau_seconds = 0.05f;
             if (meter_prefs.rms_tau_seconds > 1.0f) meter_prefs.rms_tau_seconds = 1.0f;
-            ConfigManager::Save(meter_prefs);
+            ConfigManager::Save(meter_prefs, osc_prefs);
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("RMS integration/averaging time constant (lower = faster response)");
         }
     }
-    
+
+    // ── OSC Remote Section ──
+    ImGui::Spacing();
+    if (ImGui::CollapsingHeader("[ OSC Remote ]")) {
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        bool dirty = false;
+
+        ImGui::Text("Enable OSC server:"); ImGui::SameLine(220);
+        if (ImGui::Checkbox("##osc_enabled", &osc_prefs.enabled)) {
+            dirty = true;
+            RestartOscServer();
+        }
+
+        ImGui::Text("Incoming port (recv):"); ImGui::SameLine(220);
+        ImGui::SetNextItemWidth(100);
+        if (ImGui::InputInt("##osc_in_port", &osc_prefs.in_port, 0, 0)) {
+            if (osc_prefs.in_port < 1) osc_prefs.in_port = 1;
+            if (osc_prefs.in_port > 65535) osc_prefs.in_port = 65535;
+            dirty = true;
+        }
+
+        ImGui::Text("Outgoing port (send):"); ImGui::SameLine(220);
+        ImGui::SetNextItemWidth(100);
+        if (ImGui::InputInt("##osc_out_port", &osc_prefs.out_port, 0, 0)) {
+            if (osc_prefs.out_port < 1) osc_prefs.out_port = 1;
+            if (osc_prefs.out_port > 65535) osc_prefs.out_port = 65535;
+            dirty = true;
+        }
+
+        ImGui::Spacing();
+        if (ImGui::Button("Apply / Restart")) {
+            RestartOscServer();
+            dirty = true;
+        }
+        ImGui::SameLine();
+        // Status line
+        if (osc && osc->IsRunning()) {
+            if (osc->HasClient()) {
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "Running - client connected");
+            } else {
+                ImGui::TextColored(ImVec4(0.9f, 0.85f, 0.4f, 1.0f), "Running - awaiting client");
+            }
+        } else {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Stopped");
+        }
+
+        ImGui::Spacing();
+        ImGui::TextDisabled("Binds all interfaces (0.0.0.0). Unauthenticated UDP - use on a trusted LAN only.");
+
+        if (dirty) ConfigManager::Save(meter_prefs, osc_prefs);
+    }
+
     ImGui::EndChild();
 }
 
@@ -1322,7 +1590,7 @@ void TotalMixerGUI::DrawPreferencesDialog() {
             ImGui::Text("OVR Sample Count:");
             ImGui::SetNextItemWidth(120);
             if (ImGui::SliderInt("##pref_ovr_cnt", &meter_prefs.ovr_sample_count, 1, 10)) {
-                ConfigManager::Save(meter_prefs);
+                ConfigManager::Save(meter_prefs, osc_prefs);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Consecutive overload samples to trigger OVR indicator");
@@ -1334,7 +1602,7 @@ void TotalMixerGUI::DrawPreferencesDialog() {
             if (ImGui::SliderFloat("##pref_peak_hold", &meter_prefs.peak_hold_seconds, 0.1f, 9.9f, "%.1fs")) {
                 if (meter_prefs.peak_hold_seconds < 0.1f) meter_prefs.peak_hold_seconds = 0.1f;
                 if (meter_prefs.peak_hold_seconds > 9.9f) meter_prefs.peak_hold_seconds = 9.9f;
-                ConfigManager::Save(meter_prefs);
+                ConfigManager::Save(meter_prefs, osc_prefs);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Duration the peak indicator stays visible after signal drops");
@@ -1344,7 +1612,7 @@ void TotalMixerGUI::DrawPreferencesDialog() {
             ImGui::Text("RMS +3dB Correction:");
             ImGui::SameLine();
             if (ImGui::Checkbox("##pref_rms_corr", &meter_prefs.rms_plus_3db)) {
-                ConfigManager::Save(meter_prefs);
+                ConfigManager::Save(meter_prefs, osc_prefs);
             }
             ImGui::SameLine();
             ImGui::TextDisabled("?");
@@ -1358,7 +1626,7 @@ void TotalMixerGUI::DrawPreferencesDialog() {
             if (ImGui::SliderFloat("##pref_rms_tau", &meter_prefs.rms_tau_seconds, 0.05f, 1.0f, "%.2fs")) {
                 if (meter_prefs.rms_tau_seconds < 0.05f) meter_prefs.rms_tau_seconds = 0.05f;
                 if (meter_prefs.rms_tau_seconds > 1.0f) meter_prefs.rms_tau_seconds = 1.0f;
-                ConfigManager::Save(meter_prefs);
+                ConfigManager::Save(meter_prefs, osc_prefs);
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("RMS integration/averaging time constant (lower = faster response)");
@@ -1605,22 +1873,8 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
                 }
             }
 
-            // ATOMIC WRITE: Send all 18 channels to ALSA
-            std::vector<long> all_v(18);
-            // Check if any channel has solo active
-            bool any_solo = false;
-            for(int i=0; i<18; ++i) {
-                if(master_states[i].is_soloed) { any_solo = true; break; }
-            }
-            for(int i=0; i<18; ++i) {
-                if(any_solo && !master_states[i].is_soloed) {
-                    all_v[i] = 0;  // Non-soloed channels get 0 (muted)
-                } else {
-                    all_v[i] = master_states[i].value;
-                }
-            }
-            
-            if (alsa->set_control_value("output-volume", 0, all_v)) {
+            // ATOMIC WRITE: all 18 channels with solo suppression (shared with the OSC path).
+            if (WriteAllMasterVolumes()) {
                 last_write_time = now;
                 master_last_write_time[ch_idx] = now;
                 last_widget_write_time[widget_id] = now;

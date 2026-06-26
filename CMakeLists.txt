@@ -76,6 +76,10 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(SYSTEMD REQUIRED libsystemd)
 include_directories(${SYSTEMD_INCLUDE_DIRS})
 
+# --- liblo (OSC) Check ---
+pkg_check_modules(LIBLO REQUIRED liblo)
+include_directories(${LIBLO_INCLUDE_DIRS})
+
 
 # --- Targets ---
 
@@ -92,11 +96,12 @@ add_executable(totalmixer_gui
     src/gui_main.cpp
     src/gui_app.cpp
     src/config_manager.cpp
+    src/osc_server.cpp
     src/service_checker.cpp
     src/alsa_core.cpp
 )
-target_include_directories(totalmixer_gui PRIVATE src)
-target_link_libraries(totalmixer_gui PRIVATE imgui ${ALSA_LIBRARIES} ${SYSTEMD_LIBRARIES} glfw)
+target_include_directories(totalmixer_gui PRIVATE src ${LIBLO_INCLUDE_DIRS})
+target_link_libraries(totalmixer_gui PRIVATE imgui ${ALSA_LIBRARIES} ${SYSTEMD_LIBRARIES} ${LIBLO_LIBRARIES} glfw)
 
 # Install Targets
 install(TARGETS totalmixer_cli totalmixer_gui
