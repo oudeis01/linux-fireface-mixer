@@ -6,6 +6,7 @@
 #include <memory>
 #include <chrono>
 #include "imgui.h" // Needed for ImVec2, ImGuiID
+#include "mixer_types.hpp" // ChannelState, MeterPreferences, OscPreferences (GUI-free)
 #include "alsa_core.hpp"
 #include "service_checker.hpp"
 #include "osc_server.hpp"
@@ -24,14 +25,6 @@ enum class ConnectionStatus {
     HardwareNotFound
 };
 
-struct ChannelState {
-    long value = 0;
-    bool is_linked = false;
-    bool is_muted = false;
-    bool is_soloed = false;
-    long saved_value = 0;
-};
-
 struct Device_Info {
     std::string name;
     std::string guid;
@@ -48,20 +41,6 @@ struct MeterLevel {
     bool is_overload = false;      // OVR flag
     int overload_count = 0;        // Consecutive overload samples
     float rms_sq_ema = 0.0f;       // EMA of squared linear amplitude (internal)
-};
-
-struct MeterPreferences {
-    int ovr_sample_count = 3;       // Consecutive overload samples for OVR (1-10)
-    float peak_hold_seconds = 1.5f; // Peak hold duration (0.1-9.9s)
-    bool rms_plus_3db = false;      // RMS +3dB correction checkbox
-    float rms_tau_seconds = 0.3f;   // RMS integration time (0.05-1.0s)
-};
-
-// OSC remote endpoint settings (persisted in preferences.json under "osc").
-struct OscPreferences {
-    bool enabled = false;   // Start the OSC server on launch
-    int in_port = 7001;     // UDP port we listen on for control messages
-    int out_port = 9001;    // UDP port we send state feedback to (on the client host)
 };
 
 class TotalMixerGUI {

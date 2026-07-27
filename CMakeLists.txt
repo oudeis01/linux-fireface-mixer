@@ -83,25 +83,33 @@ include_directories(${LIBLO_INCLUDE_DIRS})
 
 # --- Targets ---
 
+# 0. Mixer Engine (GUI-free core: ALSA + OSC + mixer domain logic).
+#    Deliberately links NO ImGui/GLFW/OpenGL so it can back a headless daemon.
+add_library(mixer_engine STATIC
+    src/mixer_engine.cpp
+    src/alsa_core.cpp
+    src/osc_server.cpp
+    src/config_manager.cpp
+    src/service_checker.cpp
+)
+target_include_directories(mixer_engine PUBLIC src ${LIBLO_INCLUDE_DIRS} ${SYSTEMD_INCLUDE_DIRS})
+target_link_libraries(mixer_engine PUBLIC ${ALSA_LIBRARIES} ${SYSTEMD_LIBRARIES} ${LIBLO_LIBRARIES})
+
 # 1. CLI App
-add_executable(totalmixer_cli 
-    src/main.cpp 
+add_executable(totalmixer_cli
+    src/main.cpp
     src/alsa_core.cpp
 )
 target_include_directories(totalmixer_cli PRIVATE src)
 target_link_libraries(totalmixer_cli ${ALSA_LIBRARIES})
 
-# 2. GUI App
+# 2. GUI App (frontend over mixer_engine; still owns its own inline logic until Phase 2 rewiring).
 add_executable(totalmixer_gui
     src/gui_main.cpp
     src/gui_app.cpp
-    src/config_manager.cpp
-    src/osc_server.cpp
-    src/service_checker.cpp
-    src/alsa_core.cpp
 )
 target_include_directories(totalmixer_gui PRIVATE src ${LIBLO_INCLUDE_DIRS})
-target_link_libraries(totalmixer_gui PRIVATE imgui ${ALSA_LIBRARIES} ${SYSTEMD_LIBRARIES} ${LIBLO_LIBRARIES} glfw)
+target_link_libraries(totalmixer_gui PRIVATE imgui mixer_engine glfw)
 
 # Install Targets
 install(TARGETS totalmixer_cli totalmixer_gui

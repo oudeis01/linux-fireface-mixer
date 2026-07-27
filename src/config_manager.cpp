@@ -1,5 +1,5 @@
 #include "config_manager.hpp"
-#include "gui_app.hpp"  // for MeterPreferences
+#include "mixer_types.hpp"  // for MeterPreferences, OscPreferences (GUI-free)
 #include <fstream>
 #include <sstream>
 #include <filesystem>
