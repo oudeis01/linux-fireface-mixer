@@ -59,17 +59,32 @@ public:
 
     // ── State reads (for GUI render / daemon introspection) ──
     const ChannelState& master(int ch) const { return master_states[ch]; }
-    ChannelState& master(int ch) { return master_states[ch]; }
+    ChannelState& master(int ch) { return master_states[ch]; }   // mutable: GUI faders bind here
     int selectedOutput() const { return selected_output; }
     long sourceGain(bool is_playback, int output, int src_idx) const;
     bool sourceMuted(bool is_playback, int output, int src_idx) const;
     int OutputLinkPartner(int ch) const;
     bool IsOutputSelected(int ch) const;
 
+    // Mutable crosspoint cache reference (inserts 0 if absent, like the original cache[{}]).
+    // GUI sliders bind directly to this so a drag stays smooth between throttled commits.
+    long& crosspoint(bool is_playback, int output, int src_idx);
+
+    // Raw single-crosspoint write for the Matrix grid: pushes to ALSA and notes the write time
+    // but does NOT touch the cache (the caller's bound reference already holds the value), and
+    // applies no link/mute semantics. Use SetSourceGain/SetSourceMute for the Mixer-view strips.
+    bool WriteCrosspointRaw(bool is_playback, int src_idx, int output, long val);
+
     // GUI interaction hint: the crosspoint currently being dragged, which polling must not
     // overwrite. The daemon never sets these (no dragging).
     void SetHeldCrosspoint(int output, int src_idx);
     void ClearHeldCrosspoint();
+    bool isHeldCrosspoint(int output, int src_idx) const;
+
+    // ── OSC / service status (GUI display) ──
+    bool oscRunning() const;
+    bool oscHasClient() const;
+    ServiceStatus serviceStatus() const { return service_status; }
 
     // Direct crosspoint write (analog/spdif/adat or stream), used by the primitives and the UI.
     bool WriteSourceGain(bool is_playback, int src_idx, int output, long val);

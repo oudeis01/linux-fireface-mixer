@@ -7,9 +7,9 @@
 #include <chrono>
 #include "imgui.h" // Needed for ImVec2, ImGuiID
 #include "mixer_types.hpp" // ChannelState, MeterPreferences, OscPreferences (GUI-free)
+#include "mixer_engine.hpp" // MixerEngine: owns ALSA + mixer state + OSC + polling
 #include "alsa_core.hpp"
 #include "service_checker.hpp"
-#include "osc_server.hpp"
 
 namespace TotalMixer {
 
@@ -56,16 +56,13 @@ public:
     void Render();
 
 private:
-    // Core Logic
-    std::unique_ptr<AlsaCore> alsa;
+    // The GUI-free mixer core: owns the ALSA connection, mixer state, apply primitives,
+    // hardware polling, and the OSC endpoint. All mixer edits/reads go through it.
+    MixerEngine engine_;
+
+    // GUI-side connection view (mapped from engine_.Init() / Retry results).
     ConnectionStatus connection_status;
     ServiceStatus service_status;
-    
-    void PollHardware();
-    void CheckServiceStatus();
-    void PollMasterVolumes();
-    void PollPlaybackMatrix();
-    void PollInputMatrix();
 
     // UI Draw Methods
     void DrawHeader();
@@ -77,27 +74,8 @@ private:
     void DrawFader(const char* label, long* value, int min_v, int max_v, int ch_idx);
     void DrawSourceStrip(bool is_playback, int src_idx, float fader_h);
     bool SquareSlider(const char* label, long* value, int min_v, int max_v, const ImVec2& size);
-    // Write a source->output crosspoint gain to ALSA (analog/spdif/adat or stream).
-    bool WriteSourceGain(bool is_playback, int src_idx, int output, long val);
 
-    // ── Shared apply primitives (used by both the UI and the OSC endpoint) ──
-    // Atomic 18-channel output-volume write with solo suppression (true on success).
-    bool WriteAllMasterVolumes();
-    void SetMasterVolume(int ch, long val);
-    void SetMasterMute(int ch, bool mute);
-    void SetMasterSolo(int ch, bool solo);
-    void SetMasterLink(int ch, bool linked);
-    void SetSourceGain(bool is_playback, int src_idx, int output, long val);
-    void SetSourceMute(bool is_playback, int src_idx, int output, bool mute);
-
-    // Submix selection: the output (0-17) whose mix the input/playback rows currently edit.
-    int selected_output = 0;
-    // Returns the stereo-linked partner of an output channel, or -1 if not linked.
-    int OutputLinkPartner(int ch) const;
-    // True if output ch is the selected submix or its linked partner.
-    bool IsOutputSelected(int ch) const;
-
-    // Meter Methods
+    // Meter Methods (display-only; poll the hardware through engine_.alsa()).
     void PollMeters();
     void DrawMeterBar(const char* label, const MeterLevel& meter, const ImVec2& size);
     void DrawCompactMeterStrip(const char* label, const MeterLevel& meter, float height = 90.0f);
@@ -107,19 +85,6 @@ private:
     // Preferences
     void DrawPreferencesDialog();
     bool show_prefs_dialog = false;
-
-    // ── OSC remote endpoint ──
-    std::unique_ptr<OscServer> osc;
-    OscPreferences osc_prefs;
-    void RestartOscServer();                       // (re)start or stop per osc_prefs.enabled
-    void ApplyOscCommand(const OscCommand& cmd);   // drained inbound command -> state change
-    void SendOscState();                           // diff-push current control state to client
-    std::chrono::steady_clock::time_point last_osc_push_time;
-    bool osc_resync = true;                        // force a full state dump on next push
-    int osc_last_sent_submix = -1;
-    std::vector<long> osc_last_out_fader, osc_last_in_fader, osc_last_pb_fader;
-    std::vector<int> osc_last_out_mute, osc_last_out_solo, osc_last_out_link,
-                     osc_last_in_mute, osc_last_pb_mute;
 
     // Data / State
     std::vector<std::string> out_labels;
@@ -131,33 +96,10 @@ private:
     std::vector<MeterLevel> input_meters;    // 18 channels, hardware inputs
     std::vector<MeterLevel> stream_meters;   // 18 channels, playback streams
     std::vector<std::string> stream_labels;  // Labels for playback streams
-    MeterPreferences meter_prefs;
     std::chrono::steady_clock::time_point last_meter_poll_time;
 
-    // Cache State
-    // Matrix: map (out_idx, in_idx) -> value
-    std::map<std::pair<int, int>, long> input_matrix_cache;
-    std::map<std::pair<int, int>, long> playback_matrix_cache;
-
-    // Per-submix source mute: key {output, source} present == muted; value = saved gain to
-    // restore on unmute. Separate from the cache because a crosspoint may legitimately be 0.
-    std::map<std::pair<int, int>, long> input_mute_state;
-    std::map<std::pair<int, int>, long> playback_mute_state;
-    
-    // Masters: index -> state
-    std::vector<ChannelState> master_states;
-    std::vector<std::chrono::steady_clock::time_point> master_last_write_time;
-
-    // Safety: Throttling
-    std::chrono::steady_clock::time_point last_poll_time;
-    std::chrono::steady_clock::time_point last_write_time;
+    // Safety: per-widget input throttle (GUI-only; the actual hardware write lives in the engine).
     std::map<ImGuiID, std::chrono::steady_clock::time_point> last_widget_write_time;
-    
-    // Active widget tracking (to prevent poll overwriting active slider)
-    ImGuiID active_widget_id;
-    std::pair<int, int> active_matrix_cell;
-    bool has_active_matrix_cell;
-    
     bool ShouldWrite(ImGuiID id);
 };
 

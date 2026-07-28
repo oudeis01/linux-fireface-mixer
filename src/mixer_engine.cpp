@@ -215,6 +215,17 @@ bool MixerEngine::sourceMuted(bool is_playback, int output, int src_idx) const {
     return mute_state.count({output, src_idx}) > 0;
 }
 
+long& MixerEngine::crosspoint(bool is_playback, int output, int src_idx) {
+    auto& cache = is_playback ? playback_matrix_cache : input_matrix_cache;
+    return cache[{output, src_idx}];
+}
+
+bool MixerEngine::WriteCrosspointRaw(bool is_playback, int src_idx, int output, long val) {
+    bool ok = WriteSourceGain(is_playback, src_idx, output, val);
+    if (ok) last_write_time = steady_clock::now();
+    return ok;
+}
+
 void MixerEngine::SetHeldCrosspoint(int output, int src_idx) {
     held_cell = {output, src_idx};
     has_held_cell = true;
@@ -222,6 +233,18 @@ void MixerEngine::SetHeldCrosspoint(int output, int src_idx) {
 
 void MixerEngine::ClearHeldCrosspoint() {
     has_held_cell = false;
+}
+
+bool MixerEngine::isHeldCrosspoint(int output, int src_idx) const {
+    return has_held_cell && held_cell.first == output && held_cell.second == src_idx;
+}
+
+bool MixerEngine::oscRunning() const {
+    return osc && osc->IsRunning();
+}
+
+bool MixerEngine::oscHasClient() const {
+    return osc && osc->IsRunning() && osc->HasClient();
 }
 
 // ── OSC endpoint glue ──

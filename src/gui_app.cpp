@@ -51,223 +51,6 @@ bool TotalMixerGUI::ShouldWrite(ImGuiID id) {
     return false;
 }
 
-// ── Submix helpers ──
-// Returns the stereo-linked partner of an output channel, or -1 if not linked.
-int TotalMixerGUI::OutputLinkPartner(int ch) const {
-    if (ch < 0 || ch >= (int)master_states.size()) return -1;
-    if (!master_states[ch].is_linked) return -1;
-    int partner = (ch % 2 == 0) ? ch + 1 : ch - 1;
-    if (partner < 0 || partner >= (int)master_states.size()) return -1;
-    return partner;
-}
-
-// True if output ch is the selected submix or its linked partner.
-bool TotalMixerGUI::IsOutputSelected(int ch) const {
-    if (ch == selected_output) return true;
-    int partner = OutputLinkPartner(selected_output);
-    return (partner != -1 && ch == partner);
-}
-
-// Write a source->output crosspoint gain to ALSA (analog/spdif/adat input or stream).
-bool TotalMixerGUI::WriteSourceGain(bool is_playback, int src_idx, int output, long val) {
-    if (!alsa) return false;
-    std::string mixer_name = is_playback ? "mixer:stream-source-gain" :
-                             (src_idx < 8 ? "mixer:analog-source-gain" :
-                             (src_idx < 10 ? "mixer:spdif-source-gain" : "mixer:adat-source-gain"));
-    int hw_in_idx = is_playback ? src_idx : (src_idx < 8 ? src_idx : (src_idx < 10 ? src_idx - 8 : src_idx - 10));
-    return alsa->set_matrix_gain(mixer_name, hw_in_idx, output, val);
-}
-
-// ── Shared apply primitives ──
-// The 18-channel output-volume write with solo suppression. Both the master fader UI (DrawFader)
-// and the OSC endpoint route their writes through this so the two never diverge.
-static inline long clamp_gain(long v) { return v < 0 ? 0 : (v > 65536 ? 65536 : v); }
-
-bool TotalMixerGUI::WriteAllMasterVolumes() {
-    if (!alsa) return false;
-    std::vector<long> all_v(18);
-    bool any_solo = false;
-    for (int i = 0; i < 18; ++i) {
-        if (master_states[i].is_soloed) { any_solo = true; break; }
-    }
-    for (int i = 0; i < 18; ++i) {
-        all_v[i] = (any_solo && !master_states[i].is_soloed) ? 0 : master_states[i].value;
-    }
-    return alsa->set_control_value("output-volume", 0, all_v);
-}
-
-// The following Set* methods mirror the inline UI logic in DrawFader / DrawSourceStrip so that an
-// OSC command produces an identical hardware + state change. Keep them in sync with the UI paths.
-void TotalMixerGUI::SetMasterVolume(int ch, long val) {
-    if (ch < 0 || ch >= 18) return;
-    val = clamp_gain(val);
-    auto now = std::chrono::steady_clock::now();
-    master_states[ch].value = val;
-    master_states[ch].is_muted = false;  // an explicit level set clears mute
-    master_last_write_time[ch] = now;
-    int partner = OutputLinkPartner(ch);
-    if (partner != -1) {
-        master_states[partner].value = val;
-        master_states[partner].is_muted = false;
-        master_last_write_time[partner] = now;
-    }
-    if (WriteAllMasterVolumes()) last_write_time = now;
-}
-
-void TotalMixerGUI::SetMasterMute(int ch, bool mute) {
-    if (ch < 0 || ch >= 18) return;
-    if (master_states[ch].is_muted == mute) return;
-    int partner = OutputLinkPartner(ch);
-    auto apply = [&](int c) {
-        if (mute) {
-            master_states[c].is_muted = true;
-            master_states[c].saved_value = master_states[c].value;
-            master_states[c].value = 0;
-        } else {
-            master_states[c].is_muted = false;
-            master_states[c].value = clamp_gain(master_states[c].saved_value);
-        }
-    };
-    apply(ch);
-    if (partner != -1) apply(partner);
-    auto now = std::chrono::steady_clock::now();
-    master_last_write_time[ch] = now;
-    if (partner != -1) master_last_write_time[partner] = now;
-    if (WriteAllMasterVolumes()) last_write_time = now;
-}
-
-void TotalMixerGUI::SetMasterSolo(int ch, bool solo) {
-    if (ch < 0 || ch >= 18) return;
-    master_states[ch].is_soloed = solo;
-    int partner = OutputLinkPartner(ch);
-    if (partner != -1) master_states[partner].is_soloed = solo;
-    auto now = std::chrono::steady_clock::now();
-    master_last_write_time[ch] = now;
-    if (partner != -1) master_last_write_time[partner] = now;
-    if (WriteAllMasterVolumes()) last_write_time = now;
-}
-
-void TotalMixerGUI::SetMasterLink(int ch, bool linked) {
-    if (ch < 0 || ch >= 18) return;
-    master_states[ch].is_linked = linked;
-    int pair = (ch % 2 == 0) ? ch + 1 : ch - 1;
-    if (pair >= 0 && pair < 18) master_states[pair].is_linked = linked;
-}
-
-void TotalMixerGUI::SetSourceGain(bool is_playback, int src_idx, int output, long val) {
-    if (src_idx < 0 || src_idx >= 18 || output < 0 || output >= 18) return;
-    val = clamp_gain(val);
-    auto& cache = is_playback ? playback_matrix_cache : input_matrix_cache;
-    auto& mute_state = is_playback ? playback_mute_state : input_mute_state;
-    if (val > 0) mute_state.erase({output, src_idx});  // raising level clears mute
-    cache[{output, src_idx}] = val;
-    WriteSourceGain(is_playback, src_idx, output, val);
-    int partner = OutputLinkPartner(output);
-    if (partner != -1) {
-        cache[{partner, src_idx}] = val;
-        WriteSourceGain(is_playback, src_idx, partner, val);
-    }
-    last_write_time = std::chrono::steady_clock::now();
-}
-
-void TotalMixerGUI::SetSourceMute(bool is_playback, int src_idx, int output, bool mute) {
-    if (src_idx < 0 || src_idx >= 18 || output < 0 || output >= 18) return;
-    auto& cache = is_playback ? playback_matrix_cache : input_matrix_cache;
-    auto& mute_state = is_playback ? playback_mute_state : input_mute_state;
-    bool cur = mute_state.count({output, src_idx}) > 0;
-    if (cur == mute) return;
-    int partner = OutputLinkPartner(output);
-    if (mute) {
-        mute_state[{output, src_idx}] = cache[{output, src_idx}];
-        WriteSourceGain(is_playback, src_idx, output, 0);
-        cache[{output, src_idx}] = 0;
-        if (partner != -1) {
-            WriteSourceGain(is_playback, src_idx, partner, 0);
-            cache[{partner, src_idx}] = 0;
-        }
-    } else {
-        long saved = mute_state[{output, src_idx}];
-        mute_state.erase({output, src_idx});
-        WriteSourceGain(is_playback, src_idx, output, saved);
-        cache[{output, src_idx}] = saved;
-        if (partner != -1) {
-            WriteSourceGain(is_playback, src_idx, partner, saved);
-            cache[{partner, src_idx}] = saved;
-        }
-    }
-    last_write_time = std::chrono::steady_clock::now();
-}
-
-// ── OSC endpoint glue ──
-void TotalMixerGUI::RestartOscServer() {
-    if (!osc) osc = std::make_unique<OscServer>();
-    osc->Stop();
-    if (osc_prefs.enabled) {
-        osc->Start(osc_prefs.in_port, osc_prefs.out_port);
-    }
-    osc_resync = true;  // force a full state dump once a client appears
-}
-
-void TotalMixerGUI::ApplyOscCommand(const OscCommand& cmd) {
-    const long raw = clamp_gain((long)(cmd.value * 65536.0f + 0.5f));
-    const bool on = cmd.value > 0.5f;
-    switch (cmd.type) {
-        case OscCmdType::OutFader: SetMasterVolume(cmd.index, raw); break;
-        case OscCmdType::OutMute:  SetMasterMute(cmd.index, on); break;
-        case OscCmdType::OutSolo:  SetMasterSolo(cmd.index, on); break;
-        case OscCmdType::OutLink:  SetMasterLink(cmd.index, on); break;
-        case OscCmdType::InFader:  SetSourceGain(false, cmd.index, selected_output, raw); break;
-        case OscCmdType::InMute:   SetSourceMute(false, cmd.index, selected_output, on); break;
-        case OscCmdType::PbFader:  SetSourceGain(true, cmd.index, selected_output, raw); break;
-        case OscCmdType::PbMute:   SetSourceMute(true, cmd.index, selected_output, on); break;
-        case OscCmdType::SubmixSelect:
-            if (cmd.index >= 0 && cmd.index < 18) { selected_output = cmd.index; osc_resync = true; }
-            break;
-        case OscCmdType::QueryAll: osc_resync = true; break;
-        default: break;
-    }
-}
-
-// Diff-based feedback: send only the control values that changed since the last push (or all of
-// them on a forced resync). One path covers UI edits, hardware poll changes, and OSC-applied
-// changes uniformly. Source rows are view-coupled to the currently selected submix.
-void TotalMixerGUI::SendOscState() {
-    if (!osc || !osc->IsRunning() || !osc->HasClient()) return;
-
-    bool full = osc_resync || (selected_output != osc_last_sent_submix);
-    const float N = 65536.0f;
-    auto sendf = [&](const std::string& p, float v) { osc->SendFloat(p, v); };
-
-    if (selected_output != osc_last_sent_submix) {
-        sendf("/submix/current", (float)(selected_output + 1));
-        osc_last_sent_submix = selected_output;
-    }
-
-    for (int i = 0; i < 18; ++i) {
-        std::string n = std::to_string(i + 1);
-
-        long ov = master_states[i].value;
-        if (full || ov != osc_last_out_fader[i]) { sendf("/out/fader/" + n, ov / N); osc_last_out_fader[i] = ov; }
-        int om = master_states[i].is_muted ? 1 : 0;
-        if (full || om != osc_last_out_mute[i]) { sendf("/out/mute/" + n, (float)om); osc_last_out_mute[i] = om; }
-        int os = master_states[i].is_soloed ? 1 : 0;
-        if (full || os != osc_last_out_solo[i]) { sendf("/out/solo/" + n, (float)os); osc_last_out_solo[i] = os; }
-        int ol = master_states[i].is_linked ? 1 : 0;
-        if (full || ol != osc_last_out_link[i]) { sendf("/out/link/" + n, (float)ol); osc_last_out_link[i] = ol; }
-
-        long iv = input_matrix_cache[{selected_output, i}];
-        if (full || iv != osc_last_in_fader[i]) { sendf("/in/fader/" + n, iv / N); osc_last_in_fader[i] = iv; }
-        int im = input_mute_state.count({selected_output, i}) ? 1 : 0;
-        if (full || im != osc_last_in_mute[i]) { sendf("/in/mute/" + n, (float)im); osc_last_in_mute[i] = im; }
-
-        long pv = playback_matrix_cache[{selected_output, i}];
-        if (full || pv != osc_last_pb_fader[i]) { sendf("/pb/fader/" + n, pv / N); osc_last_pb_fader[i] = pv; }
-        int pm = playback_mute_state.count({selected_output, i}) ? 1 : 0;
-        if (full || pm != osc_last_pb_mute[i]) { sendf("/pb/mute/" + n, (float)pm); osc_last_pb_mute[i] = pm; }
-    }
-    osc_resync = false;
-}
-
 // Helper: Square Slider Implementation
 bool TotalMixerGUI::SquareSlider(const char* label, long* value, int min_v, int max_v, const ImVec2& size) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -507,23 +290,18 @@ void TotalMixerGUI::DrawMeterBar(const char* label, const MeterLevel& meter, con
 
 TotalMixerGUI::TotalMixerGUI()
     : connection_status(ConnectionStatus::HardwareNotFound),
-      service_status(ServiceStatus::NotRunning),
-      last_write_time(std::chrono::steady_clock::now()),
-      active_widget_id(0),
-      has_active_matrix_cell(false) {
+      service_status(ServiceStatus::NotRunning) {
     out_labels = {
-        "Line 1", "Line 2", "Line 3", "Line 4", "Line 5", "Line 6", 
-        "Phones L", "Phones R", "SPDIF L", "SPDIF R", 
+        "Line 1", "Line 2", "Line 3", "Line 4", "Line 5", "Line 6",
+        "Phones L", "Phones R", "SPDIF L", "SPDIF R",
         "ADAT 1", "ADAT 2", "ADAT 3", "ADAT 4", "ADAT 5", "ADAT 6", "ADAT 7", "ADAT 8"
     };
     in_labels = {
-        "In 1", "In 2", "In 3", "In 4", "In 5", "In 6", "In 7", "In 8", 
-        "SPDIF L", "SPDIF R", 
+        "In 1", "In 2", "In 3", "In 4", "In 5", "In 6", "In 7", "In 8",
+        "SPDIF L", "SPDIF R",
         "ADAT 1", "ADAT 2", "ADAT 3", "ADAT 4", "ADAT 5", "ADAT 6", "ADAT 7", "ADAT 8"
     };
 
-    master_states.resize(18);
-    master_last_write_time.resize(18, std::chrono::steady_clock::now() - std::chrono::seconds(10));
     master_meters.resize(18);
     input_meters.resize(18);
     stream_meters.resize(18);
@@ -534,117 +312,27 @@ TotalMixerGUI::TotalMixerGUI()
     };
     last_meter_poll_time = std::chrono::steady_clock::now();
 
-    // Load persisted preferences
-    ConfigManager::Load(meter_prefs, osc_prefs);
+    // The engine loaded preferences in its constructor; honor the persisted OSC enable state
+    // (the daemon forces OSC on, but the GUI respects the user's choice).
+    if (engine_.oscPrefs().enabled) engine_.RestartOscServer();
 
-    // OSC feedback diff snapshots (sentinel -1 forces a first send; resync also overrides).
-    osc_last_out_fader.assign(18, -1);
-    osc_last_in_fader.assign(18, -1);
-    osc_last_pb_fader.assign(18, -1);
-    osc_last_out_mute.assign(18, -1);
-    osc_last_out_solo.assign(18, -1);
-    osc_last_out_link.assign(18, -1);
-    osc_last_in_mute.assign(18, -1);
-    osc_last_pb_mute.assign(18, -1);
-    last_osc_push_time = std::chrono::steady_clock::now();
-    if (osc_prefs.enabled) RestartOscServer();
-
-    // Check service status first
-    CheckServiceStatus();
-
-    // Service must be running to use the GUI
-    if (service_status != ServiceStatus::Running) {
-        std::cerr << "GUI Error: snd-fireface-ctl.service is not running" << std::endl;
-        if (service_status == ServiceStatus::Failed) {
-            connection_status = ConnectionStatus::ServiceFailed;
-        } else {
-            connection_status = ConnectionStatus::ServiceNotRunning;
-        }
-        return;
-    }
-
-    // Try to connect to ALSA
-    try {
-        alsa = std::make_unique<AlsaCore>();
-        connection_status = ConnectionStatus::Connected;
-        std::cout << "GUI: Connected to " << alsa->get_card_name() << std::endl;
-        PollHardware(); 
-    } catch (const std::exception& e) {
-        std::cerr << "GUI Warning: Failed to connect to ALSA: " << e.what() << std::endl;
-        connection_status = ConnectionStatus::HardwareNotFound;
+    // Connect to the hardware via the engine and map its result to the GUI status view.
+    MixerEngine::InitResult res = engine_.Init();
+    service_status = res.service;
+    if (res.service != ServiceStatus::Running) {
+        connection_status = (res.service == ServiceStatus::Failed)
+                            ? ConnectionStatus::ServiceFailed
+                            : ConnectionStatus::ServiceNotRunning;
+    } else {
+        connection_status = res.connected ? ConnectionStatus::Connected
+                                          : ConnectionStatus::HardwareNotFound;
     }
 }
 
 TotalMixerGUI::~TotalMixerGUI() {}
 
-void TotalMixerGUI::CheckServiceStatus() {
-    service_status = ServiceChecker::check_systemd("snd-fireface-ctl.service");
-    if (service_status == ServiceStatus::NotInstalled) {
-        std::cerr << "GUI Warning: snd-fireface-ctl.service not found" << std::endl;
-    }
-}
-
-void TotalMixerGUI::PollHardware() {
-    if (!alsa) return;
-    try {
-        PollMasterVolumes();
-        PollPlaybackMatrix();
-        PollInputMatrix();
-    } catch (...) {}
-}
-
-void TotalMixerGUI::PollMasterVolumes() {
-    if (!alsa) return;
-    try {
-        // While any channel is soloed, the hardware output-volume of non-soloed channels is
-        // driven to 0 (solo suppression), not their true fader value. Polling then would read
-        // those 0s back into master_states and destroy the saved values, so solo-release can no
-        // longer restore them. Skip the whole master poll while solo is active.
-        for (int i = 0; i < 18; ++i) {
-            if (master_states[i].is_soloed) return;
-        }
-        auto mv = alsa->get_matrix_row("output-volume", 0, 18);
-        if (mv) {
-            auto now = std::chrono::steady_clock::now();
-            for (size_t i = 0; i < mv->size() && i < 18; ++i) {
-                // Skip if muted or soloed (user control in progress)
-                if(master_states[i].is_muted || master_states[i].is_soloed) continue;
-                // Skip updating if this specific fader was written to in the last 2000ms
-                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - master_last_write_time[i]).count();
-                if (elapsed < 2000) continue; 
-                
-                master_states[i].value = (*mv)[i];
-            }
-        }
-    } catch (...) {}
-}
-
-void TotalMixerGUI::PollInputMatrix() {
-    try {
-        std::vector<std::string> ctl_names = {"mixer:analog-source-gain", "mixer:spdif-source-gain", "mixer:adat-source-gain"};
-        std::vector<int> offsets = {0, 8, 10};
-        for (size_t grp = 0; grp < ctl_names.size(); ++grp) {
-            int base_in = offsets[grp];
-            int count = (grp == 0) ? 8 : ((grp == 1) ? 2 : 8);
-            for (int local_in = 0; local_in < count; ++local_in) {
-                auto r = alsa->get_matrix_row(ctl_names[grp], local_in, 18);
-                if (r) {
-                    int global_in = base_in + local_in;
-                    for (size_t o = 0; o < r->size(); ++o) {
-                        if (has_active_matrix_cell && 
-                            active_matrix_cell.first == static_cast<int>(o) && 
-                            active_matrix_cell.second == global_in) {
-                            continue;
-                        }
-                        input_matrix_cache[{static_cast<int>(o), global_in}] = (*r)[o];
-                    }
-                }
-            }
-        }
-    } catch (...) {}
-}
-
 void TotalMixerGUI::PollMeters() {
+    AlsaCore* alsa = engine_.alsa();
     if (!alsa) return;
     try {
         // ── Cache raw value ranges for each meter control (query once from ALSA) ──
@@ -667,7 +355,7 @@ void TotalMixerGUI::PollMeters() {
                 std::cerr << "[METER] Warning: failed to enable metering" << std::endl;
             }
 
-            auto init_range = [this](const std::string& name, long& out_min, long& out_range) {
+            auto init_range = [alsa](const std::string& name, long& out_min, long& out_range) {
                 auto info = alsa->get_control_info(name, 0);
                 if (info) {
                     out_min = info->min;
@@ -712,11 +400,11 @@ void TotalMixerGUI::PollMeters() {
                 float inst_display = MeterLinToDisplay(norm);
 
                 // RMS (EMA of squared linear amplitude) -> the filled bar body
-                float rms_alpha = 1.0f - expf(-dt / meter_prefs.rms_tau_seconds);
+                float rms_alpha = 1.0f - expf(-dt / engine_.meterPrefs().rms_tau_seconds);
                 m.rms_sq_ema = rms_alpha * (norm * norm) + (1.0f - rms_alpha) * m.rms_sq_ema;
                 float rms_lin = sqrtf(m.rms_sq_ema);
                 // +3dB correction applied as a linear scale (10^(3/20) ≈ 1.41254) before mapping
-                if (meter_prefs.rms_plus_3db) rms_lin *= 1.41254f;
+                if (engine_.meterPrefs().rms_plus_3db) rms_lin *= 1.41254f;
                 m.rms_normalized = MeterLinToDisplay(rms_lin);
 
                 // Peak follower: instant attack, hold for peak_hold_seconds, then slow decay
@@ -727,7 +415,7 @@ void TotalMixerGUI::PollMeters() {
                     m.peak_hold_time = 0.0f;
                 } else {
                     m.peak_hold_time += dt;
-                    if (m.peak_hold_time >= meter_prefs.peak_hold_seconds) {
+                    if (m.peak_hold_time >= engine_.meterPrefs().peak_hold_seconds) {
                         m.peak_norm -= kPeakDecayPerSec * dt;
                         if (m.peak_norm < inst_display) m.peak_norm = inst_display;
                     }
@@ -737,7 +425,7 @@ void TotalMixerGUI::PollMeters() {
                 static const float kOvrDisplay = (-0.5f + kMeterFloorDB) / kMeterFloorDB;
                 if (inst_display >= kOvrDisplay) {
                     m.overload_count++;
-                    m.is_overload = (m.overload_count >= meter_prefs.ovr_sample_count);
+                    m.is_overload = (m.overload_count >= engine_.meterPrefs().ovr_sample_count);
                 } else {
                     m.overload_count = 0;
                     m.is_overload = false;
@@ -761,62 +449,19 @@ void TotalMixerGUI::PollMeters() {
     } catch (...) {}
 }
 
-void TotalMixerGUI::PollPlaybackMatrix() {
-    try {
-        for (int o = 0; o < 18; ++o) {
-            auto r_pb = alsa->get_matrix_row("mixer:stream-source-gain", o, 18);
-            if (r_pb) {
-                for (size_t i = 0; i < r_pb->size(); ++i) {
-                    if (has_active_matrix_cell && 
-                        active_matrix_cell.first == static_cast<int>(i) && 
-                        active_matrix_cell.second == o) {
-                        continue;
-                    }
-                    playback_matrix_cache[{static_cast<int>(i), o}] = (*r_pb)[i];
-                }
-            }
-        }
-    } catch (...) {}
-}
-
 void TotalMixerGUI::Render() {
     auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_poll_time).count();
-    auto since_write = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_write_time).count();
 
-    // ── OSC inbound: apply any queued remote commands on this (GUI) thread ──
-    if (osc && osc->IsRunning()) {
-        if (osc->TakeClientChanged()) osc_resync = true;  // new controller -> full dump
-        for (const auto& cmd : osc->DrainCommands()) ApplyOscCommand(cmd);
-    }
-
-    // Skip polling if:
-    // 1. Any widget is currently active (being dragged)
-    // 2. Less than 200ms since last write to hardware
+    // One engine service cycle: drain+apply inbound OSC, throttled hardware poll (skipped while
+    // a widget is being dragged), and throttled OSC diff push. The engine owns all this timing.
     bool any_widget_active = (ImGui::GetActiveID() != 0);
-    bool should_skip_poll = any_widget_active || (since_write < 200);
-    
-    if (elapsed > 500 && !should_skip_poll) {
-        std::cout << "[POLL] Executing PollHardware()" << std::endl;
-        PollHardware();
-        last_poll_time = now;
-    } else if (elapsed > 500 && should_skip_poll) {
-        std::cout << "[POLL] Skipping poll - active:" << any_widget_active 
-                  << " since_write:" << since_write << "ms" << std::endl;
-    }
+    engine_.Tick(any_widget_active);
 
-    // Meter polling at ~33ms interval (≈30Hz, every ~2 frames at 60fps)
+    // Meter polling at ~33ms interval (≈30Hz) stays in the GUI (display-only, not in the engine).
     auto meter_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_meter_poll_time).count();
     if (meter_elapsed > 33) {
         PollMeters();
         last_meter_poll_time = now;
-    }
-
-    // OSC outbound: diff-push control state to the client at ~20Hz.
-    auto osc_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_osc_push_time).count();
-    if (osc_elapsed > 50) {
-        SendOscState();
-        last_osc_push_time = now;
     }
 
     // F2 shortcut to toggle Preferences dialog
@@ -933,14 +578,15 @@ void TotalMixerGUI::DrawHeader() {
         }
         
         if (ImGui::Button("Retry Connection")) {
-            CheckServiceStatus();
-            try {
-                alsa = std::make_unique<AlsaCore>();
-                connection_status = ConnectionStatus::Connected;
-                std::cout << "GUI: Reconnected to " << alsa->get_card_name() << std::endl;
-                PollHardware();
-            } catch (const std::exception& e) {
-                std::cerr << "Reconnection failed: " << e.what() << std::endl;
+            MixerEngine::InitResult res = engine_.Init();
+            service_status = res.service;
+            if (res.service != ServiceStatus::Running) {
+                connection_status = (res.service == ServiceStatus::Failed)
+                                    ? ConnectionStatus::ServiceFailed
+                                    : ConnectionStatus::ServiceNotRunning;
+            } else {
+                connection_status = res.connected ? ConnectionStatus::Connected
+                                                  : ConnectionStatus::HardwareNotFound;
             }
         }
         
@@ -948,7 +594,7 @@ void TotalMixerGUI::DrawHeader() {
         return;
     }
 
-    std::string hw_info = alsa->get_card_name();
+    std::string hw_info = engine_.alsa()->get_card_name();
     
     size_t guid_pos = hw_info.find("GUID");
     if (guid_pos != std::string::npos) {
@@ -1034,14 +680,16 @@ void TotalMixerGUI::DrawControlTab() {
         {"S/PDIF Config", {"spdif-input-interface", "spdif-output-format", "spdif-output-non-audio"}}
     };
 
+    AlsaCore* alsa = engine_.alsa();
+
     ImGui::BeginChild("ControlTab", ImVec2(0,0), true);
     ImGui::Columns(2, "ControlCols", false);
-    
+
     for (const auto& grp : groups) {
         ImGui::BeginGroup();
         ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "[ %s ]", grp.name);
         ImGui::Separator();
-        
+
         for (const char* c_name : grp.controls) {
             if (!alsa) continue;
             auto info = alsa->get_control_info(c_name, 0);
@@ -1099,8 +747,8 @@ void TotalMixerGUI::DrawControlTab() {
 
         ImGui::Text("OVR Sample Count:"); ImGui::SameLine(200);
         ImGui::SetNextItemWidth(100);
-        if (ImGui::SliderInt("##ovr_cnt", &meter_prefs.ovr_sample_count, 1, 10)) {
-            ConfigManager::Save(meter_prefs, osc_prefs);
+        if (ImGui::SliderInt("##ovr_cnt", &engine_.meterPrefs().ovr_sample_count, 1, 10)) {
+            ConfigManager::Save(engine_.meterPrefs(), engine_.oscPrefs());
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Consecutive overload samples to trigger OVR indicator");
@@ -1108,18 +756,18 @@ void TotalMixerGUI::DrawControlTab() {
 
         ImGui::Text("Peak Hold Time:"); ImGui::SameLine(200);
         ImGui::SetNextItemWidth(100);
-        if (ImGui::SliderFloat("##peak_hold", &meter_prefs.peak_hold_seconds, 0.1f, 9.9f, "%.1fs")) {
-            if (meter_prefs.peak_hold_seconds < 0.1f) meter_prefs.peak_hold_seconds = 0.1f;
-            if (meter_prefs.peak_hold_seconds > 9.9f) meter_prefs.peak_hold_seconds = 9.9f;
-            ConfigManager::Save(meter_prefs, osc_prefs);
+        if (ImGui::SliderFloat("##peak_hold", &engine_.meterPrefs().peak_hold_seconds, 0.1f, 9.9f, "%.1fs")) {
+            if (engine_.meterPrefs().peak_hold_seconds < 0.1f) engine_.meterPrefs().peak_hold_seconds = 0.1f;
+            if (engine_.meterPrefs().peak_hold_seconds > 9.9f) engine_.meterPrefs().peak_hold_seconds = 9.9f;
+            ConfigManager::Save(engine_.meterPrefs(), engine_.oscPrefs());
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Duration the peak indicator stays visible after signal drops");
         }
 
         ImGui::Text("RMS +3dB Correction:"); ImGui::SameLine(200);
-        if (ImGui::Checkbox("##rms_corr", &meter_prefs.rms_plus_3db)) {
-            ConfigManager::Save(meter_prefs, osc_prefs);
+        if (ImGui::Checkbox("##rms_corr", &engine_.meterPrefs().rms_plus_3db)) {
+            ConfigManager::Save(engine_.meterPrefs(), engine_.oscPrefs());
         }
         ImGui::SameLine();
         ImGui::TextDisabled("?");
@@ -1129,10 +777,10 @@ void TotalMixerGUI::DrawControlTab() {
 
         ImGui::Text("RMS Integration:"); ImGui::SameLine(200);
         ImGui::SetNextItemWidth(100);
-        if (ImGui::SliderFloat("##rms_tau", &meter_prefs.rms_tau_seconds, 0.05f, 1.0f, "%.2fs")) {
-            if (meter_prefs.rms_tau_seconds < 0.05f) meter_prefs.rms_tau_seconds = 0.05f;
-            if (meter_prefs.rms_tau_seconds > 1.0f) meter_prefs.rms_tau_seconds = 1.0f;
-            ConfigManager::Save(meter_prefs, osc_prefs);
+        if (ImGui::SliderFloat("##rms_tau", &engine_.meterPrefs().rms_tau_seconds, 0.05f, 1.0f, "%.2fs")) {
+            if (engine_.meterPrefs().rms_tau_seconds < 0.05f) engine_.meterPrefs().rms_tau_seconds = 0.05f;
+            if (engine_.meterPrefs().rms_tau_seconds > 1.0f) engine_.meterPrefs().rms_tau_seconds = 1.0f;
+            ConfigManager::Save(engine_.meterPrefs(), engine_.oscPrefs());
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("RMS integration/averaging time constant (lower = faster response)");
@@ -1148,36 +796,36 @@ void TotalMixerGUI::DrawControlTab() {
         bool dirty = false;
 
         ImGui::Text("Enable OSC server:"); ImGui::SameLine(220);
-        if (ImGui::Checkbox("##osc_enabled", &osc_prefs.enabled)) {
+        if (ImGui::Checkbox("##osc_enabled", &engine_.oscPrefs().enabled)) {
             dirty = true;
-            RestartOscServer();
+            engine_.RestartOscServer();
         }
 
         ImGui::Text("Incoming port (recv):"); ImGui::SameLine(220);
         ImGui::SetNextItemWidth(100);
-        if (ImGui::InputInt("##osc_in_port", &osc_prefs.in_port, 0, 0)) {
-            if (osc_prefs.in_port < 1) osc_prefs.in_port = 1;
-            if (osc_prefs.in_port > 65535) osc_prefs.in_port = 65535;
+        if (ImGui::InputInt("##osc_in_port", &engine_.oscPrefs().in_port, 0, 0)) {
+            if (engine_.oscPrefs().in_port < 1) engine_.oscPrefs().in_port = 1;
+            if (engine_.oscPrefs().in_port > 65535) engine_.oscPrefs().in_port = 65535;
             dirty = true;
         }
 
         ImGui::Text("Outgoing port (send):"); ImGui::SameLine(220);
         ImGui::SetNextItemWidth(100);
-        if (ImGui::InputInt("##osc_out_port", &osc_prefs.out_port, 0, 0)) {
-            if (osc_prefs.out_port < 1) osc_prefs.out_port = 1;
-            if (osc_prefs.out_port > 65535) osc_prefs.out_port = 65535;
+        if (ImGui::InputInt("##osc_out_port", &engine_.oscPrefs().out_port, 0, 0)) {
+            if (engine_.oscPrefs().out_port < 1) engine_.oscPrefs().out_port = 1;
+            if (engine_.oscPrefs().out_port > 65535) engine_.oscPrefs().out_port = 65535;
             dirty = true;
         }
 
         ImGui::Spacing();
         if (ImGui::Button("Apply / Restart")) {
-            RestartOscServer();
+            engine_.RestartOscServer();
             dirty = true;
         }
         ImGui::SameLine();
         // Status line
-        if (osc && osc->IsRunning()) {
-            if (osc->HasClient()) {
+        if (engine_.oscRunning()) {
+            if (engine_.oscHasClient()) {
                 ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "Running - client connected");
             } else {
                 ImGui::TextColored(ImVec4(0.9f, 0.85f, 0.4f, 1.0f), "Running - awaiting client");
@@ -1189,7 +837,7 @@ void TotalMixerGUI::DrawControlTab() {
         ImGui::Spacing();
         ImGui::TextDisabled("Binds all interfaces (0.0.0.0). Unauthenticated UDP - use on a trusted LAN only.");
 
-        if (dirty) ConfigManager::Save(meter_prefs, osc_prefs);
+        if (dirty) ConfigManager::Save(engine_.meterPrefs(), engine_.oscPrefs());
     }
 
     // ── Web Remote Section ──
@@ -1260,41 +908,22 @@ void TotalMixerGUI::DrawMatrixTab(const char* title, bool is_playback) {
                 ImGui::TableSetColumnIndex(c + 1);
                 
                 std::string id = "##Mat" + std::to_string(r) + "_" + std::to_string(c);
-                auto& cache = is_playback ? playback_matrix_cache : input_matrix_cache;
-                long& val = cache[{c, r}]; 
+                // Bind the slider directly to the engine's cache entry so the drag stays smooth
+                // between throttled writes. The raw grid writes a single crosspoint (no link/mute).
+                long& val = engine_.crosspoint(is_playback, c, r);
                 long val_before = val;
-                
+
                 bool changed = SquareSlider(id.c_str(), &val, 0, 65536, ImVec2(40, 40));
-                
-                if (ImGui::IsItemActive()) {
-                    active_matrix_cell = {c, r};
-                    has_active_matrix_cell = true;
+
+                if (changed && val != val_before && engine_.connected() &&
+                    ShouldWrite(ImGui::GetID(id.c_str()))) {
+                    engine_.WriteCrosspointRaw(is_playback, r, c, val);
                 }
-                
-                if (changed && val != val_before) {
-                    std::cout << "[SLIDER] Mat[" << r << "," << c << "] changed: " 
-                              << val_before << " -> " << val << std::endl;
-                    
-                    if (alsa && ShouldWrite(ImGui::GetID(id.c_str()))) {
-                        std::string mixer_name = is_playback ? "mixer:stream-source-gain" : 
-                                                (r < 8 ? "mixer:analog-source-gain" : 
-                                                (r < 10 ? "mixer:spdif-source-gain" : "mixer:adat-source-gain"));
-                        int hw_in_idx = is_playback ? r : (r < 8 ? r : (r < 10 ? r-8 : r-10));
-                        bool success = alsa->set_matrix_gain(mixer_name, hw_in_idx, c, val);
-                        if (success) {
-                            last_write_time = std::chrono::steady_clock::now();
-                            std::cout << "Write Matrix [" << c+1 << "<-" << r+1 << "]: " << val << " SUCCESS" << std::endl;
-                        } else {
-                            std::cerr << "Write Matrix [" << c+1 << "<-" << r+1 << "]: " << val << " FAILED" << std::endl;
-                        }
-                    }
-                }
-                
+
                 if (ImGui::IsItemActive()) {
-                    active_matrix_cell = {c, r};
-                    has_active_matrix_cell = true;
-                } else if (has_active_matrix_cell && active_matrix_cell.first == c && active_matrix_cell.second == r) {
-                    has_active_matrix_cell = false;
+                    engine_.SetHeldCrosspoint(c, r);
+                } else if (engine_.isHeldCrosspoint(c, r)) {
+                    engine_.ClearHeldCrosspoint();
                 }
             }
         }
@@ -1308,11 +937,11 @@ void TotalMixerGUI::DrawMatrixTab(const char* title, bool is_playback) {
 void TotalMixerGUI::DrawSourceStrip(bool is_playback, int src_idx, float fader_h) {
     ImGui::BeginGroup();
 
-    auto& cache = is_playback ? playback_matrix_cache : input_matrix_cache;
-    auto& mute_state = is_playback ? playback_mute_state : input_mute_state;
-    long& val = cache[{selected_output, src_idx}];
+    // Bind directly to the engine's crosspoint cache for the selected submix (smooth drag).
+    int sel = engine_.selectedOutput();
+    long& val = engine_.crosspoint(is_playback, sel, src_idx);
     long val_before = val;
-    bool is_muted = mute_state.count({selected_output, src_idx}) > 0;
+    bool is_muted = engine_.sourceMuted(is_playback, sel, src_idx);
 
     const std::vector<std::string>& labels = is_playback ? stream_labels : in_labels;
     const std::vector<MeterLevel>& meters = is_playback ? stream_meters : input_meters;
@@ -1348,11 +977,9 @@ void TotalMixerGUI::DrawSourceStrip(bool is_playback, int src_idx, float fader_h
     bool slider_active = ImGui::IsItemActive();
 
     if (slider_active) {
-        active_matrix_cell = {selected_output, src_idx};
-        has_active_matrix_cell = true;
-    } else if (has_active_matrix_cell && active_matrix_cell.first == selected_output &&
-               active_matrix_cell.second == src_idx) {
-        has_active_matrix_cell = false;
+        engine_.SetHeldCrosspoint(sel, src_idx);
+    } else if (engine_.isHeldCrosspoint(sel, src_idx)) {
+        engine_.ClearHeldCrosspoint();
     }
 
     ImGui::SameLine(0, gap);
@@ -1374,26 +1001,13 @@ void TotalMixerGUI::DrawSourceStrip(bool is_playback, int src_idx, float fader_h
         ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
     }
 
-    if (changed && val != val_before && alsa) {
-        // Moving the fader to a non-zero gain implicitly clears the mute on this crosspoint.
-        if (is_muted && val > 0) {
-            mute_state.erase({selected_output, src_idx});
-            is_muted = false;
-        }
+    if (changed && val != val_before && engine_.connected()) {
         ImGuiID widget_id = ImGui::GetID(id.c_str());
         if (ShouldWrite(widget_id)) {
-            bool ok = WriteSourceGain(is_playback, src_idx, selected_output, val);
-            // Linked output: write the same gain to the partner column too (center, equal gain).
-            int partner = OutputLinkPartner(selected_output);
-            if (partner != -1) {
-                WriteSourceGain(is_playback, src_idx, partner, val);
-                cache[{partner, src_idx}] = val;
-            }
-            if (ok) {
-                auto now = std::chrono::steady_clock::now();
-                last_write_time = now;
-                last_widget_write_time[widget_id] = now;
-            }
+            // Engine primitive: clamps, clears mute when raised, updates the cache, and mirrors
+            // the gain to the linked partner column. Raising a muted crosspoint auto-unmutes it.
+            engine_.SetSourceGain(is_playback, src_idx, sel, val);
+            is_muted = engine_.sourceMuted(is_playback, sel, src_idx);
         }
     }
 
@@ -1414,33 +1028,13 @@ void TotalMixerGUI::DrawSourceStrip(bool is_playback, int src_idx, float fader_h
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(m_color.x * 1.4f, m_color.y * 1.4f, m_color.z * 1.4f, 1.0f));
 
         std::string mute_id = "M##srcmute_" + std::string(is_playback ? "pb" : "in") + std::to_string(src_idx);
-        if (ImGui::Button(mute_id.c_str(), ImVec2(mute_w, 18)) && alsa) {
-            int partner = OutputLinkPartner(selected_output);
-            if (!is_muted) {
-                // Mute: save current gain(s), write 0 to the crosspoint(s).
-                mute_state[{selected_output, src_idx}] = val;
-                WriteSourceGain(is_playback, src_idx, selected_output, 0);
-                val = 0;
-                if (partner != -1) {
-                    WriteSourceGain(is_playback, src_idx, partner, 0);
-                    cache[{partner, src_idx}] = 0;
-                }
-            } else {
-                // Unmute: restore saved gain(s).
-                long saved = mute_state[{selected_output, src_idx}];
-                mute_state.erase({selected_output, src_idx});
-                WriteSourceGain(is_playback, src_idx, selected_output, saved);
-                val = saved;
-                if (partner != -1) {
-                    WriteSourceGain(is_playback, src_idx, partner, saved);
-                    cache[{partner, src_idx}] = saved;
-                }
-            }
-            last_write_time = std::chrono::steady_clock::now();
+        if (ImGui::Button(mute_id.c_str(), ImVec2(mute_w, 18)) && engine_.connected()) {
+            // Engine primitive: saves/restores the gain and mirrors to the linked partner.
+            engine_.SetSourceMute(is_playback, src_idx, sel, !is_muted);
         }
         ImGui::PopStyleColor(3);
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Mute %s -> %s", label, out_labels[selected_output].c_str());
+            ImGui::SetTooltip("Mute %s -> %s", label, out_labels[sel].c_str());
         }
     }
 
@@ -1454,8 +1048,9 @@ void TotalMixerGUI::DrawMixerTab() {
     ImGui::BeginChild("MixerTab", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
 
     // Submix banner
-    ImGui::TextColored(ImVec4(0.9f, 0.85f, 0.4f, 1.0f), "SUBMIX: %s", out_labels[selected_output].c_str());
-    int banner_partner = OutputLinkPartner(selected_output);
+    int sel = engine_.selectedOutput();
+    ImGui::TextColored(ImVec4(0.9f, 0.85f, 0.4f, 1.0f), "SUBMIX: %s", out_labels[sel].c_str());
+    int banner_partner = engine_.OutputLinkPartner(sel);
     if (banner_partner != -1) {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(0.9f, 0.85f, 0.4f, 1.0f), "+ %s (linked)", out_labels[banner_partner].c_str());
@@ -1467,7 +1062,7 @@ void TotalMixerGUI::DrawMixerTab() {
     const float src_fader_h = 120.0f;
 
     // Row 1 — Hardware Inputs
-    ImGui::TextColored(ImVec4(0.7f, 1.0f, 0.7f, 1.0f), "HARDWARE INPUTS  ->  %s", out_labels[selected_output].c_str());
+    ImGui::TextColored(ImVec4(0.7f, 1.0f, 0.7f, 1.0f), "HARDWARE INPUTS  ->  %s", out_labels[sel].c_str());
     ImGui::Spacing();
     for (int i = 0; i < 18; ++i) {
         if (i > 0) ImGui::SameLine(0, 12.0f);
@@ -1478,7 +1073,7 @@ void TotalMixerGUI::DrawMixerTab() {
     ImGui::Separator();
 
     // Row 2 — Software Playback
-    ImGui::TextColored(ImVec4(0.7f, 1.0f, 0.7f, 1.0f), "SOFTWARE PLAYBACK  ->  %s", out_labels[selected_output].c_str());
+    ImGui::TextColored(ImVec4(0.7f, 1.0f, 0.7f, 1.0f), "SOFTWARE PLAYBACK  ->  %s", out_labels[sel].c_str());
     ImGui::Spacing();
     for (int i = 0; i < 18; ++i) {
         if (i > 0) ImGui::SameLine(0, 12.0f);
@@ -1494,7 +1089,7 @@ void TotalMixerGUI::DrawMixerTab() {
     for (int i = 0; i < 18; ++i) {
         if (i > 0) ImGui::SameLine(0, 12.0f);
         ImGui::PushID(i);
-        DrawFader(out_labels[i].c_str(), &master_states[i].value, 0, 65536, i);
+        DrawFader(out_labels[i].c_str(), &engine_.master(i).value, 0, 65536, i);
         ImGui::PopID();
     }
 
@@ -1519,7 +1114,6 @@ void TotalMixerGUI::DrawCombinedMatrixTab() {
 
         for (int sec = 0; sec < 2; ++sec) {
             bool is_playback = (sec == 1);
-            auto& cache = is_playback ? playback_matrix_cache : input_matrix_cache;
             const std::vector<std::string>& labels = is_playback ? stream_labels : in_labels;
 
             // Section divider row
@@ -1535,23 +1129,20 @@ void TotalMixerGUI::DrawCombinedMatrixTab() {
                 for (int c = 0; c < 18; ++c) {
                     ImGui::TableSetColumnIndex(c + 1);
                     std::string id = "##CM" + std::to_string(sec) + "_" + std::to_string(r) + "_" + std::to_string(c);
-                    long& val = cache[{c, r}];
+                    long& val = engine_.crosspoint(is_playback, c, r);
                     long val_before = val;
 
                     bool changed = SquareSlider(id.c_str(), &val, 0, 65536, ImVec2(40, 40));
 
                     if (ImGui::IsItemActive()) {
-                        active_matrix_cell = {c, r};
-                        has_active_matrix_cell = true;
-                    } else if (has_active_matrix_cell && active_matrix_cell.first == c &&
-                               active_matrix_cell.second == r) {
-                        has_active_matrix_cell = false;
+                        engine_.SetHeldCrosspoint(c, r);
+                    } else if (engine_.isHeldCrosspoint(c, r)) {
+                        engine_.ClearHeldCrosspoint();
                     }
 
-                    if (changed && val != val_before && alsa && ShouldWrite(ImGui::GetID(id.c_str()))) {
-                        if (WriteSourceGain(is_playback, r, c, val)) {
-                            last_write_time = std::chrono::steady_clock::now();
-                        }
+                    if (changed && val != val_before && engine_.connected() &&
+                        ShouldWrite(ImGui::GetID(id.c_str()))) {
+                        engine_.WriteCrosspointRaw(is_playback, r, c, val);
                     }
                 }
             }
@@ -1570,7 +1161,7 @@ void TotalMixerGUI::DrawMasterSection(float height) {
     for (size_t i = 0; i < out_labels.size(); ++i) {
         if (i > 0) ImGui::SameLine(0, 15.0f); // More space between fader groups
         ImGui::PushID((int)i);
-        DrawFader(out_labels[i].c_str(), &master_states[i].value, 0, 65536, (int)i);
+        DrawFader(out_labels[i].c_str(), &engine_.master((int)i).value, 0, 65536, (int)i);
         ImGui::PopID();
     }
     ImGui::EndChild();
@@ -1654,8 +1245,8 @@ void TotalMixerGUI::DrawPreferencesDialog() {
 
             ImGui::Text("OVR Sample Count:");
             ImGui::SetNextItemWidth(120);
-            if (ImGui::SliderInt("##pref_ovr_cnt", &meter_prefs.ovr_sample_count, 1, 10)) {
-                ConfigManager::Save(meter_prefs, osc_prefs);
+            if (ImGui::SliderInt("##pref_ovr_cnt", &engine_.meterPrefs().ovr_sample_count, 1, 10)) {
+                ConfigManager::Save(engine_.meterPrefs(), engine_.oscPrefs());
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Consecutive overload samples to trigger OVR indicator");
@@ -1664,10 +1255,10 @@ void TotalMixerGUI::DrawPreferencesDialog() {
             ImGui::Spacing();
             ImGui::Text("Peak Hold Time:");
             ImGui::SetNextItemWidth(120);
-            if (ImGui::SliderFloat("##pref_peak_hold", &meter_prefs.peak_hold_seconds, 0.1f, 9.9f, "%.1fs")) {
-                if (meter_prefs.peak_hold_seconds < 0.1f) meter_prefs.peak_hold_seconds = 0.1f;
-                if (meter_prefs.peak_hold_seconds > 9.9f) meter_prefs.peak_hold_seconds = 9.9f;
-                ConfigManager::Save(meter_prefs, osc_prefs);
+            if (ImGui::SliderFloat("##pref_peak_hold", &engine_.meterPrefs().peak_hold_seconds, 0.1f, 9.9f, "%.1fs")) {
+                if (engine_.meterPrefs().peak_hold_seconds < 0.1f) engine_.meterPrefs().peak_hold_seconds = 0.1f;
+                if (engine_.meterPrefs().peak_hold_seconds > 9.9f) engine_.meterPrefs().peak_hold_seconds = 9.9f;
+                ConfigManager::Save(engine_.meterPrefs(), engine_.oscPrefs());
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Duration the peak indicator stays visible after signal drops");
@@ -1676,8 +1267,8 @@ void TotalMixerGUI::DrawPreferencesDialog() {
             ImGui::Spacing();
             ImGui::Text("RMS +3dB Correction:");
             ImGui::SameLine();
-            if (ImGui::Checkbox("##pref_rms_corr", &meter_prefs.rms_plus_3db)) {
-                ConfigManager::Save(meter_prefs, osc_prefs);
+            if (ImGui::Checkbox("##pref_rms_corr", &engine_.meterPrefs().rms_plus_3db)) {
+                ConfigManager::Save(engine_.meterPrefs(), engine_.oscPrefs());
             }
             ImGui::SameLine();
             ImGui::TextDisabled("?");
@@ -1688,10 +1279,10 @@ void TotalMixerGUI::DrawPreferencesDialog() {
             ImGui::Spacing();
             ImGui::Text("RMS Integration Time:");
             ImGui::SetNextItemWidth(120);
-            if (ImGui::SliderFloat("##pref_rms_tau", &meter_prefs.rms_tau_seconds, 0.05f, 1.0f, "%.2fs")) {
-                if (meter_prefs.rms_tau_seconds < 0.05f) meter_prefs.rms_tau_seconds = 0.05f;
-                if (meter_prefs.rms_tau_seconds > 1.0f) meter_prefs.rms_tau_seconds = 1.0f;
-                ConfigManager::Save(meter_prefs, osc_prefs);
+            if (ImGui::SliderFloat("##pref_rms_tau", &engine_.meterPrefs().rms_tau_seconds, 0.05f, 1.0f, "%.2fs")) {
+                if (engine_.meterPrefs().rms_tau_seconds < 0.05f) engine_.meterPrefs().rms_tau_seconds = 0.05f;
+                if (engine_.meterPrefs().rms_tau_seconds > 1.0f) engine_.meterPrefs().rms_tau_seconds = 1.0f;
+                ConfigManager::Save(engine_.meterPrefs(), engine_.oscPrefs());
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("RMS integration/averaging time constant (lower = faster response)");
@@ -1732,14 +1323,14 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
     float text_x = current_x + (group_w - label_width) / 2.0f;
     
     // Clickable label: selects this output as the submix edited by the Mixer rows 1/2.
-    bool is_selected = IsOutputSelected(ch_idx);
+    bool is_selected = engine_.IsOutputSelected(ch_idx);
     ImGui::SetCursorScreenPos(ImVec2(text_x, ImGui::GetCursorScreenPos().y));
     ImVec4 label_col = is_selected ? ImVec4(1.0f, 0.9f, 0.45f, 1.0f) : ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
     ImGui::PushStyleColor(ImGuiCol_Text, label_col);
     ImGui::Text("%s", label);
     ImGui::PopStyleColor();
     if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-        selected_output = ch_idx;
+        engine_.SetSubmix(ch_idx);
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Click to edit %s submix", label);
@@ -1786,11 +1377,12 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
         ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
     }
 
-    // Link handling
-    if (fader_changed && ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
+    // Link handling: mirror the dragged value to the partner every frame for a smooth visual
+    // (the actual hardware write + persistence happens in the throttled commit below).
+    if (fader_changed && ch_idx < 18 && engine_.master(ch_idx).is_linked) {
         int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
-        if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
-            master_states[pair_idx].value = *value;
+        if (pair_idx >= 0 && pair_idx < 18) {
+            engine_.master(pair_idx).value = *value;
         }
     }
 
@@ -1844,106 +1436,61 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
         ImGui::EndPopup();
     }
     
-    // Mute and Solo buttons (placed BEFORE write-back so they trigger ALSA write)
-    if (ch_idx < (int)master_states.size()) {
-        int ms_partner = OutputLinkPartner(ch_idx);
+    // Mute and Solo buttons. The engine primitives own the save/restore, linked-partner
+    // propagation, and the atomic hardware write, so the button handlers just toggle state.
+    if (ch_idx < 18) {
         float ms_button_w = 24.0f;
         float total_ms_w = ms_button_w * 2.0f + 7.0f;
         ImGui::SetCursorScreenPos(ImVec2(current_x + (group_w - total_ms_w) / 2.0f, ImGui::GetCursorScreenPos().y));
-        
+
         // Mute button
         {
-            bool is_muted = master_states[ch_idx].is_muted;
+            bool is_muted = engine_.master(ch_idx).is_muted;
             ImVec4 m_color = is_muted ? ImVec4(0.8f, 0.2f, 0.2f, 1.0f) : ImVec4(0.4f, 0.4f, 0.4f, 0.6f);
             ImGui::PushStyleColor(ImGuiCol_Button, m_color);
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(m_color.x * 1.2f, m_color.y * 1.2f, m_color.z * 1.2f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(m_color.x * 1.4f, m_color.y * 1.4f, m_color.z * 1.4f, 1.0f));
-            
+
             std::string mute_id = "M##mute_" + std::to_string(ch_idx);
             if (ImGui::Button(mute_id.c_str(), ImVec2(ms_button_w, 20))) {
-                if (!is_muted) {
-                    master_states[ch_idx].is_muted = true;
-                    master_states[ch_idx].saved_value = *value;
-                    *value = 0;
-                    // Propagate to the linked partner so a stereo pair mutes together (#3).
-                    if (ms_partner != -1) {
-                        master_states[ms_partner].is_muted = true;
-                        master_states[ms_partner].saved_value = master_states[ms_partner].value;
-                        master_states[ms_partner].value = 0;
-                    }
-                    fader_changed = true;
-                    force_write = true;
-                } else {
-                    master_states[ch_idx].is_muted = false;
-                    *value = master_states[ch_idx].saved_value;
-                    if (*value > max_v) *value = max_v;
-                    if (*value < min_v) *value = min_v;
-                    if (ms_partner != -1) {
-                        master_states[ms_partner].is_muted = false;
-                        master_states[ms_partner].value = master_states[ms_partner].saved_value;
-                        if (master_states[ms_partner].value > max_v) master_states[ms_partner].value = max_v;
-                        if (master_states[ms_partner].value < min_v) master_states[ms_partner].value = min_v;
-                    }
-                    fader_changed = true;
-                    force_write = true;
-                }
+                engine_.SetMasterMute(ch_idx, !is_muted);
             }
             ImGui::PopStyleColor(3);
-            
+
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Mute %s", label);
             }
         }
-        
+
         ImGui::SameLine();
-        
+
         // Solo button
         {
-            bool is_soloed = master_states[ch_idx].is_soloed;
+            bool is_soloed = engine_.master(ch_idx).is_soloed;
             ImVec4 s_color = is_soloed ? ImVec4(0.8f, 0.8f, 0.2f, 1.0f) : ImVec4(0.4f, 0.4f, 0.4f, 0.6f);
             ImGui::PushStyleColor(ImGuiCol_Button, s_color);
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(s_color.x * 1.2f, s_color.y * 1.2f, s_color.z * 1.2f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(s_color.x * 1.4f, s_color.y * 1.4f, s_color.z * 1.4f, 1.0f));
-            
+
             std::string solo_id = "S##solo_" + std::to_string(ch_idx);
             if (ImGui::Button(solo_id.c_str(), ImVec2(ms_button_w, 20))) {
-                master_states[ch_idx].is_soloed = !is_soloed;
-                // Propagate to the linked partner so a stereo pair solos together (#3).
-                if (ms_partner != -1) {
-                    master_states[ms_partner].is_soloed = master_states[ch_idx].is_soloed;
-                }
-                fader_changed = true;
-                force_write = true;
+                engine_.SetMasterSolo(ch_idx, !is_soloed);
             }
             ImGui::PopStyleColor(3);
-            
+
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Solo %s", label);
             }
         }
     }
     
-    // Real-time Update (Throttled by ShouldWrite, unless force_write is true)
-    if (alsa && (fader_changed || ImGui::IsItemDeactivatedAfterEdit())) {
+    // Real-time Update (throttled by ShouldWrite, unless force_write from the popup). The engine
+    // primitive clamps, clears mute, mirrors to the linked partner, and does the atomic 18-channel
+    // write with solo suppression. *value aliases engine_.master(ch_idx).value.
+    if (engine_.connected() && (fader_changed || ImGui::IsItemDeactivatedAfterEdit())) {
         ImGuiID widget_id = ImGui::GetID(id.c_str());
         if (force_write || ShouldWrite(widget_id)) {
-            auto now = std::chrono::steady_clock::now();
-            
-            // Link handling
-            if (ch_idx < (int)master_states.size() && master_states[ch_idx].is_linked) {
-                int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
-                if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
-                    master_states[pair_idx].value = *value;
-                    master_last_write_time[pair_idx] = now;
-                }
-            }
-
-            // ATOMIC WRITE: all 18 channels with solo suppression (shared with the OSC path).
-            if (WriteAllMasterVolumes()) {
-                last_write_time = now;
-                master_last_write_time[ch_idx] = now;
-                last_widget_write_time[widget_id] = now;
-            }
+            engine_.SetMasterVolume(ch_idx, engine_.master(ch_idx).value);
         }
     }
     
@@ -1951,29 +1498,25 @@ void TotalMixerGUI::DrawFader(const char* label, long* value, int min_v, int max
     ImGui::SetCursorScreenPos(ImVec2(current_x + (group_w - db_width)/2.0f, ImGui::GetCursorScreenPos().y));
     ImGui::TextColored(ImVec4(0,1,0,1), "%s", db_str.c_str());
     
-    if (ch_idx < (int)master_states.size()) {
-        bool is_linked = master_states[ch_idx].is_linked;
+    if (ch_idx < 18) {
+        bool is_linked = engine_.master(ch_idx).is_linked;
         int pair_idx = (ch_idx % 2 == 0) ? ch_idx + 1 : ch_idx - 1;
-        
+
         ImVec4 link_color = is_linked ? ImVec4(0.2f, 0.8f, 1.0f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 0.6f);
         ImGui::PushStyleColor(ImGuiCol_Button, link_color);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(link_color.x * 1.2f, link_color.y * 1.2f, link_color.z * 1.2f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(link_color.x * 1.4f, link_color.y * 1.4f, link_color.z * 1.4f, 1.0f));
-        
+
         float button_width = 50.0f;
         ImGui::SetCursorScreenPos(ImVec2(current_x + (group_w - button_width)/2.0f, ImGui::GetCursorScreenPos().y));
-        
+
         std::string link_label = is_linked ? "==" : "||";
         std::string link_btn_id = link_label + "##link_" + std::to_string(ch_idx);
-        
+
         if (ImGui::Button(link_btn_id.c_str(), ImVec2(button_width, 20))) {
-            master_states[ch_idx].is_linked = !is_linked;
-            
-            if (pair_idx >= 0 && pair_idx < (int)master_states.size()) {
-                master_states[pair_idx].is_linked = master_states[ch_idx].is_linked;
-            }
+            engine_.SetMasterLink(ch_idx, !is_linked);
         }
-        
+
         ImGui::PopStyleColor(3);
         
         if (ImGui::IsItemHovered()) {
