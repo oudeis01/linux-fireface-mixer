@@ -1,6 +1,6 @@
 pkgbase = linux-fireface-mixer
-	pkgdesc = GUI mixer application for RME Fireface 400 on Linux
-	pkgver = 0.2.0
+	pkgdesc = GUI mixer and headless OSC daemon for RME Fireface 400 on Linux
+	pkgver = 0.4.0
 	pkgrel = 1
 	url = https://github.com/oudeis01/linux-fireface-mixer
 	arch = x86_64
@@ -15,7 +15,8 @@ pkgbase = linux-fireface-mixer
 	depends = systemd-libs
 	depends = liblo
 	depends = snd-firewire-ctl-services
-	source = linux-fireface-mixer-0.2.0.tar.gz::https://github.com/oudeis01/linux-fireface-mixer/archive/refs/tags/v0.2.0.tar.gz
+	optdepends = linux-totalmix-web-remote: web remote control from phones/tablets over the LAN
+	source = linux-fireface-mixer-0.4.0.tar.gz::https://github.com/oudeis01/linux-fireface-mixer/archive/refs/tags/v0.4.0.tar.gz
 	sha256sums = SKIP
 
 pkgname = linux-fireface-mixer

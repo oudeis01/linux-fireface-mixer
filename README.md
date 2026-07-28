@@ -13,7 +13,8 @@ GUI mixer application for RME Fireface audio interfaces on Linux.
 - **Level meters** - hardware metering with a -90 dBFS range, RMS bar plus peak-hold line, and overload indication.
 - **Per-channel Mute / Solo / stereo Link** on outputs, and per-submix Mute on input/playback sources.
 - **OSC remote control** - bidirectional Open Sound Control endpoint to drive and observe the mixer over the network (see Usage).
-- **Headless daemon** - `totalmixer-daemon` exposes the same OSC endpoint with no GUI or display dependency, for running the mixer on a headless server (see Usage).
+- **Headless daemon** - `totalmixer daemon` exposes the same OSC endpoint with no GUI or display dependency, for running the mixer on a headless server (see Usage).
+- **Web remote** - optional browser-based control from phones and tablets, launched from the GUI when the separate `linux-totalmix-web-remote` package is installed (see Usage).
 
 ## Dependencies
 
@@ -88,10 +89,16 @@ make
 ## Usage
 
 ```bash
-./build/totalmixer_gui
+./build/totalmixer_gui          # GUI mixer
+./build/totalmixer info         # dump card controls to stdout (add --card N to pick a card)
+./build/totalmixer daemon       # headless OSC daemon (see below)
 ```
 
 The GUI will display an error if `snd-fireface-ctl.service` is not running.
+
+The headless `totalmixer` binary is a multicall executable: `totalmixer <command>`. Run `totalmixer --help` for the command list.
+
+> **Upgrading from 0.3.x:** the separate `totalmixer-daemon` and `totalmixer_cli` binaries are gone. `totalmixer-daemon` is now `totalmixer daemon`, and the old CLI's control dump is now `totalmixer info`. The shipped systemd unit is unchanged in name (`totalmixer-daemon.service`); only its `ExecStart` moved to `totalmixer daemon`. Update any of your own scripts or drop-ins accordingly.
 
 ### OSC Remote Control
 
@@ -119,12 +126,12 @@ oscdump 9001                                 # observe feedback from the desktop
 
 ### Headless Daemon
 
-For a headless server (no X11/OpenGL), `totalmixer-daemon` runs the same OSC endpoint without the GUI. It has no meters and no display dependency. OSC is always enabled in daemon mode (the `preferences.json` `enabled` flag is ignored).
+For a headless server (no X11/OpenGL), `totalmixer daemon` runs the same OSC endpoint without the GUI. It has no meters and no display dependency. OSC is always enabled in daemon mode (the `preferences.json` `enabled` flag is ignored).
 
 ```bash
-./build/totalmixer-daemon                       # ports from preferences.json
-./build/totalmixer-daemon --osc-in 7005 --osc-out 9005 --card 1
-./build/totalmixer-daemon --help
+./build/totalmixer daemon                       # ports from preferences.json
+./build/totalmixer daemon --osc-in 7005 --osc-out 9005 --card 1
+./build/totalmixer daemon --help
 ```
 
 The daemon exits non-zero if `snd-fireface-ctl.service` is not running or the card is unavailable, so a service manager can own the retry policy. A systemd **user** unit is installed (disabled by default):
@@ -140,10 +147,24 @@ To override ports or select a card, use a drop-in rather than editing the shippe
 systemctl --user edit totalmixer-daemon.service
 # [Service]
 # ExecStart=
-# ExecStart=/usr/bin/totalmixer-daemon --osc-in 7005 --osc-out 9005 --card 1
+# ExecStart=/usr/bin/totalmixer daemon --osc-in 7005 --osc-out 9005 --card 1
 ```
 
 > Do not run the daemon while a GUI instance also has its OSC server enabled: both would try to bind the same UDP ports. Use one or the other, or give them distinct ports.
+
+### Web Remote
+
+The **web remote** lets you control the mixer from a phone or tablet browser over the LAN. It is a separate program, `linux-totalmix-web-remote`, packaged on its own (`yay -S linux-totalmix-web-remote-bin`). The `linux-fireface-mixer` package lists it as an optional dependency.
+
+Once it is installed and on your `PATH`, open **Control tab -> [ Web Remote ]** in the GUI and press **Start**. The GUI launches the bridge as a child process, wiring it to the mixer's current OSC ports, and shows the LAN URL to open (default `http://<your-ip>:8451`). Stopping it (or closing the GUI) shuts the bridge down.
+
+For a headless daemon, the GUI is not involved; run the bridge as its own systemd user unit instead:
+
+```bash
+linux-totalmix-web-remote systemd install --enable --now
+```
+
+> The web UI is unauthenticated and shares the OSC endpoint's trust model. Use it only on a trusted LAN.
 
 ## License
 
