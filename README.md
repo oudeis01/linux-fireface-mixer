@@ -13,6 +13,7 @@ GUI mixer application for RME Fireface audio interfaces on Linux.
 - **Level meters** - hardware metering with a -90 dBFS range, RMS bar plus peak-hold line, and overload indication.
 - **Per-channel Mute / Solo / stereo Link** on outputs, and per-submix Mute on input/playback sources.
 - **OSC remote control** - bidirectional Open Sound Control endpoint to drive and observe the mixer over the network (see Usage).
+- **Headless daemon** - `totalmixer-daemon` exposes the same OSC endpoint with no GUI or display dependency, for running the mixer on a headless server (see Usage).
 
 ## Dependencies
 
@@ -115,6 +116,34 @@ oscdump 9001                                 # observe feedback from the desktop
 ```
 
 > Note: the endpoint binds all interfaces and is unauthenticated UDP. Use it only on a trusted LAN.
+
+### Headless Daemon
+
+For a headless server (no X11/OpenGL), `totalmixer-daemon` runs the same OSC endpoint without the GUI. It has no meters and no display dependency. OSC is always enabled in daemon mode (the `preferences.json` `enabled` flag is ignored).
+
+```bash
+./build/totalmixer-daemon                       # ports from preferences.json
+./build/totalmixer-daemon --osc-in 7005 --osc-out 9005 --card 1
+./build/totalmixer-daemon --help
+```
+
+The daemon exits non-zero if `snd-fireface-ctl.service` is not running or the card is unavailable, so a service manager can own the retry policy. A systemd **user** unit is installed (disabled by default):
+
+```bash
+systemctl --user enable --now totalmixer-daemon.service
+systemctl --user status totalmixer-daemon.service
+```
+
+To override ports or select a card, use a drop-in rather than editing the shipped unit:
+
+```bash
+systemctl --user edit totalmixer-daemon.service
+# [Service]
+# ExecStart=
+# ExecStart=/usr/bin/totalmixer-daemon --osc-in 7005 --osc-out 9005 --card 1
+```
+
+> Do not run the daemon while a GUI instance also has its OSC server enabled: both would try to bind the same UDP ports. Use one or the other, or give them distinct ports.
 
 ## License
 

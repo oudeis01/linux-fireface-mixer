@@ -1,0 +1,31 @@
+# systemd user unit for the headless OSC mixer daemon.
+#
+# Shipped disabled. Enable it per user with:
+#   systemctl --user enable --now totalmixer-daemon.service
+#
+# Do NOT run this while a GUI instance also has its OSC server enabled: both would try to
+# bind the same UDP ports. Use one or the other, or give them distinct ports via drop-in
+# (see below). The OSC endpoint is unauthenticated; keep it on a trusted LAN only.
+#
+# To override ports or pick a card, add a drop-in instead of editing this file:
+#   systemctl --user edit totalmixer-daemon.service
+#   [Service]
+#   ExecStart=
+#   ExecStart=/usr/bin/totalmixer-daemon --osc-in 7005 --osc-out 9005 --card 1
+
+[Unit]
+Description=RME Fireface headless OSC mixer daemon
+Documentation=https://github.com/oudeis01/linux-fireface-mixer
+After=sound.target snd-fireface-ctl.service
+Wants=snd-fireface-ctl.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/totalmixer-daemon
+# The daemon exits non-zero when the service or hardware is unavailable; let systemd own the
+# retry policy rather than looping internally.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

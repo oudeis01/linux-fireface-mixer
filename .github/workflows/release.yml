@@ -31,8 +31,9 @@ jobs:
                      make -j\$(nproc) && \
                      cd .. && \
                      mv build/totalmixer_gui totalmixer_gui-x86_64 && \
-                     mv build/totalmixer_cli totalmixer_cli-x86_64"
-      
+                     mv build/totalmixer_cli totalmixer_cli-x86_64 && \
+                     mv build/totalmixer-daemon totalmixer-daemon-x86_64"
+
       - name: Create/Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -40,6 +41,7 @@ jobs:
           files: |
             totalmixer_gui-x86_64
             totalmixer_cli-x86_64
+            totalmixer-daemon-x86_64
 
   aur-push:
     name: Push Source and Binary Packages to AUR

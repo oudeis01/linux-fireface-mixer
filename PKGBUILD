@@ -1,8 +1,8 @@
 # Maintainer: Haram Choi <altitudinem at google dot com>
 pkgname=linux-fireface-mixer
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
-pkgdesc="GUI mixer application for RME Fireface 400 on Linux"
+pkgdesc="GUI mixer and headless OSC daemon for RME Fireface 400 on Linux"
 arch=('x86_64')
 url="https://github.com/oudeis01/linux-fireface-mixer"
 license=('GPL3')
@@ -27,7 +27,11 @@ package() {
   
   install -Dm755 totalmixer_gui "$pkgdir/usr/bin/totalmixer_gui"
   install -Dm755 totalmixer_cli "$pkgdir/usr/bin/totalmixer_cli"
-  
+  install -Dm755 totalmixer-daemon "$pkgdir/usr/bin/totalmixer-daemon"
+
+  install -Dm644 "$srcdir/$pkgname-$pkgver/packaging/totalmixer-daemon.service" \
+      "$pkgdir/usr/lib/systemd/user/totalmixer-daemon.service"
+
   install -Dm644 "$srcdir/$pkgname-$pkgver/LICENSE" \
       "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 "$srcdir/$pkgname-$pkgver/README.md" \

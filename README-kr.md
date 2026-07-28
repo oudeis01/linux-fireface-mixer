@@ -13,6 +13,7 @@ RME Fireface 오디오 인터페이스를 위한 Linux용 GUI 믹서 애플리�
 - **레벨 미터** - -90 dBFS 범위의 하드웨어 미터링, RMS 바 + 피크 홀드 라인, 오버로드 표시.
 - **채널별 Mute / Solo / 스테레오 Link** (출력), 입력/재생 소스에 대한 서브믹스별 Mute.
 - **OSC 원격 제어** - 네트워크로 믹서를 제어하고 상태를 관찰하는 양방향 Open Sound Control 엔드포인트 (사용법 참조).
+- **헤드리스 데몬** - `totalmixer-daemon`은 GUI나 디스플레이 의존 없이 동일한 OSC 엔드포인트를 제공하여, 헤드리스 서버에서 믹서를 상주 실행합니다 (사용법 참조).
 
 ## 종속성
 
@@ -115,6 +116,34 @@ oscdump 9001                                 # 데스크탑이 보내는 피드�
 ```
 
 > 참고: 엔드포인트는 모든 인터페이스에 바인딩되며 인증 없는 UDP입니다. 신뢰된 LAN에서만 사용하십시오.
+
+### 헤드리스 데몬
+
+헤드리스 서버(X11/OpenGL 없음)를 위해 `totalmixer-daemon`은 GUI 없이 동일한 OSC 엔드포인트를 실행합니다. 미터와 디스플레이 의존이 없습니다. 데몬 모드에서 OSC는 항상 활성화됩니다(`preferences.json`의 `enabled` 플래그는 무시).
+
+```bash
+./build/totalmixer-daemon                       # preferences.json의 포트 사용
+./build/totalmixer-daemon --osc-in 7005 --osc-out 9005 --card 1
+./build/totalmixer-daemon --help
+```
+
+`snd-fireface-ctl.service`가 실행 중이 아니거나 카드를 사용할 수 없으면 데몬은 0이 아닌 코드로 종료하므로, 재시도 정책은 서비스 관리자가 담당합니다. systemd **user** 유닛이 설치됩니다(기본 비활성):
+
+```bash
+systemctl --user enable --now totalmixer-daemon.service
+systemctl --user status totalmixer-daemon.service
+```
+
+포트나 카드를 바꾸려면 배포된 유닛을 직접 수정하지 말고 drop-in을 사용하십시오:
+
+```bash
+systemctl --user edit totalmixer-daemon.service
+# [Service]
+# ExecStart=
+# ExecStart=/usr/bin/totalmixer-daemon --osc-in 7005 --osc-out 9005 --card 1
+```
+
+> GUI 인스턴스가 OSC 서버를 켠 상태에서 데몬을 동시에 실행하지 마십시오. 둘이 같은 UDP 포트를 바인딩하려다 충돌합니다. 하나만 사용하거나 서로 다른 포트를 지정하십시오.
 
 ## 라이선스
 

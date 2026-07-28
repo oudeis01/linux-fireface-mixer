@@ -123,6 +123,12 @@ install(TARGETS totalmixer_cli totalmixer_gui totalmixer-daemon
     RUNTIME DESTINATION bin
 )
 
+# systemd user unit for the daemon. Shipped disabled (opt-in); the user enables it with
+# `systemctl --user enable --now totalmixer-daemon.service`.
+install(FILES packaging/totalmixer-daemon.service
+    DESTINATION lib/systemd/user
+)
+
 # Install Desktop Entry and Icon
 install(FILES totalmixer.desktop
     DESTINATION share/applications
