@@ -41,14 +41,14 @@ void MixerEngine::CheckServiceStatus() {
     }
 }
 
-MixerEngine::InitResult MixerEngine::Init() {
+MixerEngine::InitResult MixerEngine::Init(int card_index) {
     CheckServiceStatus();
     if (service_status != ServiceStatus::Running) {
         std::cerr << "Engine Error: snd-fireface-ctl.service is not running" << std::endl;
         return InitResult{false, service_status};
     }
     try {
-        alsa_ = std::make_unique<AlsaCore>();
+        alsa_ = std::make_unique<AlsaCore>(card_index);
         std::cout << "Engine: Connected to " << alsa_->get_card_name() << std::endl;
         PollHardware();
         return InitResult{true, service_status};

@@ -103,7 +103,7 @@ add_executable(totalmixer_cli
 target_include_directories(totalmixer_cli PRIVATE src)
 target_link_libraries(totalmixer_cli ${ALSA_LIBRARIES})
 
-# 2. GUI App (frontend over mixer_engine; still owns its own inline logic until Phase 2 rewiring).
+# 2. GUI App (thin frontend over mixer_engine; all mixer logic lives in the engine).
 add_executable(totalmixer_gui
     src/gui_main.cpp
     src/gui_app.cpp
@@ -111,8 +111,15 @@ add_executable(totalmixer_gui
 target_include_directories(totalmixer_gui PRIVATE src ${LIBLO_INCLUDE_DIRS})
 target_link_libraries(totalmixer_gui PRIVATE imgui mixer_engine glfw)
 
+# 3. Headless OSC daemon (frontend over mixer_engine; no ImGui/GLFW/OpenGL/X11).
+add_executable(totalmixer-daemon
+    src/daemon_main.cpp
+)
+target_include_directories(totalmixer-daemon PRIVATE src)
+target_link_libraries(totalmixer-daemon PRIVATE mixer_engine Threads::Threads)
+
 # Install Targets
-install(TARGETS totalmixer_cli totalmixer_gui
+install(TARGETS totalmixer_cli totalmixer_gui totalmixer-daemon
     RUNTIME DESTINATION bin
 )
 

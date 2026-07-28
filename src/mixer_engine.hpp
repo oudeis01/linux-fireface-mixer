@@ -34,8 +34,10 @@ public:
     };
 
     // Check the kernel service, connect to the Fireface card, and take a first hardware poll.
-    // Does not start OSC (call StartOsc separately). Safe to call once at startup.
-    InitResult Init();
+    // Does not start OSC (call RestartOscServer separately). Safe to call once at startup.
+    // card_index < 0 auto-selects the first Fireface card (the GUI default); the daemon may
+    // pass an explicit index via --card.
+    InitResult Init(int card_index = -1);
 
     // ── OSC endpoint ──
     OscPreferences& oscPrefs() { return osc_prefs; }
