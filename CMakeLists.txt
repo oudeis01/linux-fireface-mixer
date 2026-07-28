@@ -127,6 +127,42 @@ install(FILES packaging/totalmixer-daemon.service
     DESTINATION lib/systemd/user
 )
 
+# --- Optional: build the Rust web-remote bridge alongside (dev convenience) ---
+# OFF by default. Distribution packages do NOT use this; end users get the bridge via a
+# package dependency (see PKGBUILD). This flag is purely for building both from source in a
+# side-by-side checkout. Source defaults to the sibling repo; override with -DBRIDGE_SOURCE_DIR.
+option(WITH_BRIDGE "Also build the Rust web-remote bridge from source (dev convenience)" OFF)
+if(WITH_BRIDGE)
+    set(BRIDGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../linux-totalmix-web-remote"
+        CACHE PATH "Path to the linux-totalmix-web-remote source tree")
+
+    find_program(CARGO_EXECUTABLE cargo)
+    if(NOT CARGO_EXECUTABLE)
+        message(FATAL_ERROR "WITH_BRIDGE=ON requires cargo (Rust). Install rust/cargo, or leave WITH_BRIDGE off and get the bridge from its own package.")
+    endif()
+    if(NOT EXISTS "${BRIDGE_SOURCE_DIR}/Cargo.toml")
+        message(FATAL_ERROR "WITH_BRIDGE=ON: no Cargo.toml at '${BRIDGE_SOURCE_DIR}'. Point -DBRIDGE_SOURCE_DIR=<path> at the linux-totalmix-web-remote checkout.")
+    endif()
+
+    include(ExternalProject)
+    set(BRIDGE_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/bridge-build")
+    ExternalProject_Add(bridge
+        SOURCE_DIR        "${BRIDGE_SOURCE_DIR}"
+        CONFIGURE_COMMAND ""
+        BUILD_COMMAND     ${CARGO_EXECUTABLE} build --release
+                          --manifest-path "${BRIDGE_SOURCE_DIR}/Cargo.toml"
+                          --target-dir "${BRIDGE_TARGET_DIR}"
+        INSTALL_COMMAND   ""
+        BUILD_ALWAYS      1
+        USES_TERMINAL_BUILD 1
+    )
+    # Cargo writes the release binary here; install it next to totalmixer.
+    install(PROGRAMS "${BRIDGE_TARGET_DIR}/release/linux-totalmix-web-remote"
+        DESTINATION bin
+    )
+    message(STATUS "WITH_BRIDGE=ON: building bridge from ${BRIDGE_SOURCE_DIR}")
+endif()
+
 # Install Desktop Entry and Icon
 install(FILES totalmixer.desktop
     DESTINATION share/applications
