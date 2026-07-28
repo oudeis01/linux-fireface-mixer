@@ -95,15 +95,7 @@ add_library(mixer_engine STATIC
 target_include_directories(mixer_engine PUBLIC src ${LIBLO_INCLUDE_DIRS} ${SYSTEMD_INCLUDE_DIRS})
 target_link_libraries(mixer_engine PUBLIC ${ALSA_LIBRARIES} ${SYSTEMD_LIBRARIES} ${LIBLO_LIBRARIES})
 
-# 1. CLI App
-add_executable(totalmixer_cli
-    src/main.cpp
-    src/alsa_core.cpp
-)
-target_include_directories(totalmixer_cli PRIVATE src)
-target_link_libraries(totalmixer_cli ${ALSA_LIBRARIES})
-
-# 2. GUI App (thin frontend over mixer_engine; all mixer logic lives in the engine).
+# 1. GUI App (thin frontend over mixer_engine; all mixer logic lives in the engine).
 add_executable(totalmixer_gui
     src/gui_main.cpp
     src/gui_app.cpp
@@ -111,15 +103,20 @@ add_executable(totalmixer_gui
 target_include_directories(totalmixer_gui PRIVATE src ${LIBLO_INCLUDE_DIRS})
 target_link_libraries(totalmixer_gui PRIVATE imgui mixer_engine glfw)
 
-# 3. Headless OSC daemon (frontend over mixer_engine; no ImGui/GLFW/OpenGL/X11).
-add_executable(totalmixer-daemon
-    src/daemon_main.cpp
+# 2. Headless multicall binary: `totalmixer <command>` (daemon, info). Frontend over
+#    mixer_engine only, so it links no ImGui/GLFW/OpenGL/X11 and runs on a headless server.
+#    NOTE: do NOT add src/alsa_core.cpp here; it is already compiled into mixer_engine, and
+#    listing it again would duplicate the AlsaCore symbols.
+add_executable(totalmixer
+    src/main_multicall.cpp
+    src/daemon_run.cpp
+    src/info_run.cpp
 )
-target_include_directories(totalmixer-daemon PRIVATE src)
-target_link_libraries(totalmixer-daemon PRIVATE mixer_engine Threads::Threads)
+target_include_directories(totalmixer PRIVATE src)
+target_link_libraries(totalmixer PRIVATE mixer_engine Threads::Threads)
 
 # Install Targets
-install(TARGETS totalmixer_cli totalmixer_gui totalmixer-daemon
+install(TARGETS totalmixer_gui totalmixer
     RUNTIME DESTINATION bin
 )
 

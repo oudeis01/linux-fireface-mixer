@@ -1,4 +1,4 @@
-// Headless OSC control daemon for the RME Fireface mixer.
+// `totalmixer daemon` subcommand: headless OSC control daemon for the RME Fireface mixer.
 //
 // This is a thin frontend over MixerEngine with no GUI, no meters, and no display
 // dependency (links neither ImGui, GLFW, nor OpenGL). Its sole purpose is to expose the
@@ -17,6 +17,7 @@
 #include <string>
 #include <thread>
 
+#include "cli_subcommands.hpp"
 #include "mixer_engine.hpp"
 
 namespace {
@@ -29,9 +30,9 @@ void HandleSignal(int) {
     g_running = 0;
 }
 
-void PrintUsage(const char* argv0) {
+void PrintUsage() {
     std::cout <<
-        "Usage: " << argv0 << " [options]\n"
+        "Usage: totalmixer daemon [options]\n"
         "\n"
         "Headless OSC control daemon for the RME Fireface mixer.\n"
         "OSC is always enabled in daemon mode (the preferences.json 'enabled' flag is ignored).\n"
@@ -65,15 +66,18 @@ bool ParseIntArg(int argc, char** argv, int& i, const char* flag, int& out) {
 
 } // namespace
 
-int main(int argc, char** argv) {
-    int card_index = -1;      // -1 = auto-select first Fireface
-    int osc_in_override = -1;  // -1 = keep preferences.json value
+namespace TotalMixer {
+
+// argv[0] is "daemon"; options follow from index 1.
+int RunDaemon(int argc, char** argv) {
+    int card_index = -1;       // -1 = auto-select first Fireface
+    int osc_in_override = -1;   // -1 = keep preferences.json value
     int osc_out_override = -1;
 
     for (int i = 1; i < argc; ++i) {
         const char* arg = argv[i];
         if (std::strcmp(arg, "-h") == 0 || std::strcmp(arg, "--help") == 0) {
-            PrintUsage(argv[0]);
+            PrintUsage();
             return 0;
         } else if (std::strcmp(arg, "--osc-in") == 0) {
             if (!ParseIntArg(argc, argv, i, "--osc-in", osc_in_override)) return 2;
@@ -83,21 +87,21 @@ int main(int argc, char** argv) {
             if (!ParseIntArg(argc, argv, i, "--card", card_index)) return 2;
         } else {
             std::cerr << "Error: unknown argument '" << arg << "'\n";
-            PrintUsage(argv[0]);
+            PrintUsage();
             return 2;
         }
     }
 
-    TotalMixer::MixerEngine engine;
+    MixerEngine engine;
 
     // Daemon mode exists to serve OSC, so force it on and apply any port overrides before Init.
-    TotalMixer::OscPreferences& osc = engine.oscPrefs();
+    OscPreferences& osc = engine.oscPrefs();
     osc.enabled = true;
     if (osc_in_override >= 0) osc.in_port = osc_in_override;
     if (osc_out_override >= 0) osc.out_port = osc_out_override;
 
     // Connect to the kernel service and the card. Any failure is fatal (systemd owns retries).
-    TotalMixer::MixerEngine::InitResult init = engine.Init(card_index);
+    MixerEngine::InitResult init = engine.Init(card_index);
     if (!init.connected) {
         std::cerr << "Daemon: failed to connect to the Fireface (service or hardware "
                      "unavailable). Exiting." << std::endl;
@@ -132,3 +136,5 @@ int main(int argc, char** argv) {
     engine.StopOsc();
     return 0;
 }
+
+} // namespace TotalMixer

@@ -11,7 +11,7 @@
 #   systemctl --user edit totalmixer-daemon.service
 #   [Service]
 #   ExecStart=
-#   ExecStart=/usr/bin/totalmixer-daemon --osc-in 7005 --osc-out 9005 --card 1
+#   ExecStart=/usr/bin/totalmixer daemon --osc-in 7005 --osc-out 9005 --card 1
 
 [Unit]
 Description=RME Fireface headless OSC mixer daemon
@@ -21,7 +21,7 @@ Wants=snd-fireface-ctl.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/totalmixer-daemon
+ExecStart=/usr/bin/totalmixer daemon
 # The daemon exits non-zero when the service or hardware is unavailable; let systemd own the
 # retry policy rather than looping internally.
 Restart=on-failure
