@@ -457,6 +457,10 @@ void TotalMixerGUI::Render() {
     bool any_widget_active = (ImGui::GetActiveID() != 0);
     engine_.Tick(any_widget_active);
 
+    // Reap the web-remote bridge child if it exited (crash or its own systemd/user stop), so it
+    // never lingers as a zombie regardless of which tab is visible.
+    bridge_.Poll();
+
     // Meter polling at ~33ms interval (≈30Hz) stays in the GUI (display-only, not in the engine).
     auto meter_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_meter_poll_time).count();
     if (meter_elapsed > 33) {
@@ -846,39 +850,79 @@ void TotalMixerGUI::DrawControlTab() {
         ImGui::Separator();
         ImGui::Spacing();
 
-        ImGui::TextWrapped("A companion phone web remote (PWA) is available as a "
-                           "separate app. It serves a lightweight mixer UI and bridges "
-                           "it to this app's OSC endpoint, so you can control the mixer "
-                           "from a phone on the same network.");
+        ImGui::TextWrapped("A companion phone web remote (PWA). This app can launch it as a "
+                           "background process that bridges a lightweight mixer UI to the OSC "
+                           "endpoint above, so you can control the mixer from a phone on the "
+                           "same network.");
         ImGui::Spacing();
 
-        ImGui::Text("Repo:"); ImGui::SameLine();
-        ImGui::TextDisabled("github.com/oudeis01/linux-totalmix-web-remote");
-        ImGui::Spacing();
+        const bool available = BridgeProcess::IsAvailable();
+        const bool bridge_running = bridge_.running();
+        const OscPreferences& osc = engine_.oscPrefs();
 
-        ImGui::TextWrapped("1. Enable the OSC server above.");
-        ImGui::TextWrapped("2. Run the bridge on this PC:");
-        ImGui::Indent();
-        ImGui::TextDisabled("linux-totalmix-web-remote --allow-external");
-        ImGui::Unindent();
-        ImGui::TextWrapped("3. On a phone on the same LAN, open:");
-
-        static std::vector<std::string> lan_ips = GetLocalIPv4Addresses();
-        ImGui::Indent();
-        if (lan_ips.empty()) {
-            ImGui::BulletText("http://<this-pc-ip>:8451");
+        if (!available) {
+            ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f),
+                               "Bridge not installed (%s not found on PATH).",
+                               BridgeProcess::kBinaryName);
+            ImGui::TextWrapped("Install it to enable the phone remote:");
+            ImGui::Indent();
+            ImGui::TextDisabled("yay -S linux-totalmix-web-remote-bin");
+            ImGui::TextDisabled("github.com/oudeis01/linux-totalmix-web-remote");
+            ImGui::Unindent();
         } else {
-            for (const auto& ip : lan_ips) {
-                ImGui::BulletText("http://%s:8451", ip.c_str());
+            ImGui::Text("Status:"); ImGui::SameLine();
+            if (bridge_running) {
+                ImGui::TextColored(ImVec4(0.4f, 0.85f, 0.4f, 1.0f), "running (pid %d)", bridge_.pid());
+            } else if (bridge_.last_exit_code() > 0) {
+                ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.4f, 1.0f), "stopped (exit %d)",
+                                   bridge_.last_exit_code());
+            } else {
+                ImGui::TextDisabled("stopped");
+            }
+
+            // --allow-external is applied at launch, so only editable while stopped.
+            if (bridge_running) ImGui::BeginDisabled();
+            ImGui::Checkbox("Allow external (bind 0.0.0.0 for LAN phones)", &bridge_allow_external_);
+            if (bridge_running) ImGui::EndDisabled();
+
+            if (!osc.enabled) {
+                ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f),
+                                   "Enable the OSC server above; the bridge relays to it.");
+            }
+
+            if (!bridge_running) {
+                if (ImGui::Button("Start bridge")) {
+                    bridge_.Start(osc.in_port, osc.out_port, bridge_allow_external_);
+                }
+            } else {
+                if (ImGui::Button("Stop bridge")) {
+                    bridge_.Stop();
+                }
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("relays OSC in=%d out=%d", osc.in_port, osc.out_port);
+
+            if (bridge_running) {
+                ImGui::Spacing();
+                ImGui::TextWrapped("On a phone on the same LAN, open:");
+                static std::vector<std::string> lan_ips = GetLocalIPv4Addresses();
+                ImGui::Indent();
+                if (lan_ips.empty()) {
+                    ImGui::BulletText("http://<this-pc-ip>:%d", BridgeProcess::kWebPort);
+                } else {
+                    for (const auto& ip : lan_ips) {
+                        ImGui::BulletText("http://%s:%d", ip.c_str(), BridgeProcess::kWebPort);
+                    }
+                }
+                ImGui::Unindent();
+                if (ImGui::SmallButton("Refresh addresses")) {
+                    lan_ips = GetLocalIPv4Addresses();
+                }
             }
         }
-        ImGui::Unindent();
-        if (ImGui::SmallButton("Refresh addresses")) {
-            lan_ips = GetLocalIPv4Addresses();
-        }
 
         ImGui::Spacing();
-        ImGui::TextDisabled("Default web port 8451. The bridge relays to the OSC ports above.");
+        ImGui::TextDisabled("The bridge runs as a separate process; closing this app stops it.");
     }
 
     ImGui::EndChild();

@@ -99,6 +99,7 @@ target_link_libraries(mixer_engine PUBLIC ${ALSA_LIBRARIES} ${SYSTEMD_LIBRARIES}
 add_executable(totalmixer_gui
     src/gui_main.cpp
     src/gui_app.cpp
+    src/bridge_process.cpp
 )
 target_include_directories(totalmixer_gui PRIVATE src ${LIBLO_INCLUDE_DIRS})
 target_link_libraries(totalmixer_gui PRIVATE imgui mixer_engine glfw)

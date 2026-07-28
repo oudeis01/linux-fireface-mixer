@@ -10,6 +10,7 @@
 #include "mixer_engine.hpp" // MixerEngine: owns ALSA + mixer state + OSC + polling
 #include "alsa_core.hpp"
 #include "service_checker.hpp"
+#include "bridge_process.hpp" // Optional web-remote bridge child process (GUI-managed)
 
 namespace TotalMixer {
 
@@ -85,6 +86,11 @@ private:
     // Preferences
     void DrawPreferencesDialog();
     bool show_prefs_dialog = false;
+
+    // Optional web-remote bridge, launched as a child process from the Web Remote section.
+    // Reaped once per frame in Render() so an exited child never lingers as a zombie.
+    BridgeProcess bridge_;
+    bool bridge_allow_external_ = true; // default ON: the point is phone access over the LAN
 
     // Data / State
     std::vector<std::string> out_labels;
